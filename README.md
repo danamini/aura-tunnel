@@ -6,6 +6,7 @@
 [![Language](https://img.shields.io/badge/language-Z80%20assembler-2f74c0)](src/main.asm)
 [![Frame rate](https://img.shields.io/badge/frame%20rate-locked%2050%20fps-34d399)](#how-it-holds-50-fps)
 [![Sound](https://img.shields.io/badge/sound-1--bit%20beeper-f4d03f)](#the-music)
+[![Release](https://img.shields.io/github/v/release/danamini/aura-tunnel?color=ff3df0&label=release)](https://github.com/danamini/aura-tunnel/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT%20(see%20note)-lightgrey)](LICENSE)
 
 <img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&weight=500&size=18&duration=2800&pause=900&color=FF3DF0&center=true&vCenter=true&width=780&lines=Eleven+scenes.+69%2C888+T-states+a+frame.;All+the+trig+was+paid+for+at+build+time.;The+stack+pointer+is+the+renderer." alt="Eleven scenes. 69,888 T-states a frame. All the trig was paid for at build time. The stack pointer is the renderer."/>
@@ -40,11 +41,11 @@ The house rule, stolen from the demos of the era: **the Z80 never computes what 
 
 ## Run it in 30 seconds
 
-**In your browser (easiest):** open **[JSSpeccy](https://jsspeccy.zxdemo.org/)**, click **Open file**, and pick `build/aura-tunnel.sna`. It boots straight into the show.
+**In your browser (easiest):** download `aura-tunnel.sna` from the **[latest release](https://github.com/danamini/aura-tunnel/releases/latest)**, open **[JSSpeccy](https://jsspeccy.zxdemo.org/)**, click **Open file**, and pick the snapshot. It boots straight into the show.
 
-**In a desktop emulator:** any Spectrum emulator that loads `.sna` snapshots works (ZEsarUX, Fuse, Spectaculator, Retro Virtual Machine…). The snapshot is the whole demo — no tape loading, no commands.
+**In a desktop emulator:** any Spectrum emulator that loads `.sna` snapshots works (ZEsarUX, Fuse, Spectaculator, Retro Virtual Machine…). The snapshot is the whole demo — no tape loading, no commands. (Building it yourself produces the same files in `build/`.)
 
-**On real hardware:** use `build/aura-tunnel.tap` with a tape interface (TZXDuino, DivMMC, etc.):
+**On real hardware:** use `aura-tunnel.tap` from the release with a tape interface (TZXDuino, DivMMC, etc.):
 
 ```
 LOAD ""
