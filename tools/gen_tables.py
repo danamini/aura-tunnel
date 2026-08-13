@@ -168,22 +168,23 @@ print("  snake.asm: %d variants" % len(lines_of))
 NOTE_HZ = {"A3": 220, "E4": 330, "F4": 349, "G4": 392, "A4": 440,
            "B4": 494, "C5": 523, "D5": 587, "E5": 659, "F5": 698,
            "G5": 784, "A5": 880}
-PATTERN = ["A4", None, "E5", None, "A4", "C5", "E5", None,   # bar 1: Am
-           "A5", None, "E5", "C5", "A4", None, "E4", None,
-           "G4", None, "D5", None, "G4", "B4", "D5", None,   # bar 2: G
-           "G5", None, "D5", "B4", "G4", None, "B4", None,
-           "F4", None, "C5", None, "F4", "A4", "C5", None,   # bar 3: F
-           "F5", None, "C5", "A4", "F4", None, "A4", None,
-           "G4", None, "D5", None, "G4", "B4", "D5", None,   # bar 4: G
-           "G5", None, "D5", "B4", "G4", None, "E4", "E4",
-           "A4", "C5", "E5", "A5", None, "E5", "C5", None,   # bar 5: Am runs
-           "E5", "A5", None, "E5", "A4", None, "E4", None,
-           "F4", None, "A4", "C5", "F5", None, "C5", None,   # bar 6: F runs
-           "A4", "C5", "F5", None, "C5", "A4", "F4", None,
-           "G4", None, "B4", "D5", "G5", None, "D5", None,   # bar 7: G runs
-           "B4", "D5", "G5", None, "D5", "B4", "G4", None,
-           "A4", None, "E4", None, "E4", None, "E4", "G4",   # bar 8: turn
-           "A4", None, "B4", None, "C5", "D5", "E5", "E4"]
+PATTERN = [  # Korobeiniki - the 19th-century folk melody, PD
+    "E5","E5","B4","C5","D5","D5","C5","B4",   # bar 1
+    "A4","A4","A4","C5","E5","E5","D5","C5",
+    "B4","B4","B4","C5","D5","D5","E5","E5",   # bar 2
+    "C5","C5","A4","A4","A4","A4",None,None,
+    "D5","D5","D5","F5","A5","A5","G5","F5",   # bar 3
+    "E5","E5","E5","C5","E5","E5","D5","C5",
+    "B4","B4","B4","C5","D5","D5","E5","E5",   # bar 4
+    "C5","C5","A4","A4","A4","A4",None,None,
+    "E5","E5","B4","C5","D5","D5","C5","B4",   # bars 5-8: the theme
+    "A4","A4","A4","C5","E5","E5","D5","C5",   # again, rounding off
+    "B4","B4","B4","C5","D5","D5","E5","E5",   # with a firmer cadence
+    "C5","C5","A4","A4","A4","A4",None,None,
+    "D5","D5","D5","F5","A5","A5","G5","F5",
+    "E5","E5","E5","C5","E5","E5","D5","C5",
+    "B4","B4","C5","C5","D5","D5","E5","E5",
+    "C5","C5","A4","A4","A4","A4","A4","A4"]
 BURST_T = 13000
 
 mus = bytearray()
@@ -337,7 +338,7 @@ except ImportError:
 # perspective-projected in here so the Z80 never multiplies.  Per frame:
 # 8 vertices x [sx, sy] = 16 bytes.  Plus a radial rainbow attr backdrop
 # the spinning wireframe picks its colours from.
-CUBE_HALF, CUBE_DIST, CUBE_SCALE = 15, 140, 140
+CUBE_HALF, CUBE_DIST, CUBE_SCALE = 15, 140, 135
 cube = bytearray()
 for k in range(128):
     a = 2 * math.pi * k / 128
@@ -351,7 +352,8 @@ for k in range(128):
         y, z = y * cb - z * sb, y * sb + z * cb
         px = round(128 + x * CUBE_SCALE / (z + CUBE_DIST))
         py = round(96 + y * CUBE_SCALE / (z + CUBE_DIST))
-        assert 0 <= px < 256 and 0 <= py < 192
+        # must stay inside the 64x64 off-screen raster buffer
+        assert 96 <= px <= 159 and 64 <= py <= 127, (px, py)
         cube += bytes((px, py))
 assert len(cube) == 2048
 write("cube.bin", cube)

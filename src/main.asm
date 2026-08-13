@@ -57,6 +57,7 @@ BBUF     EQU $DF00              ; giant-scroller overlay masks: 4 rows x 32
                                 ;   maps and the cool palette)
 SHADEP0  EQU $E000              ; cool palette shade tables, same layout
 SHADEI0  EQU $E800
+CBUF     EQU $5B00              ; the cube's 8x64-byte off-screen raster
 STACK    EQU $FA00
 IM2TAB   EQU $FB00              ; 257 bytes of $FC
 IM2VEC   EQU $FCFC              ; RETI
@@ -429,67 +430,83 @@ RENDER:
 ; ANDed with anything is 0), so rows 16-19 are a straight copy of BBUF's
 ; odd bytes.  Full 50 fps, a fraction of the old cost.
 RENDER4S:
-        call BIGBBUF            ; build this frame's text masks
-        ld a,(FRAMES)           ; bounce: band top row rides the sine
+        call BIGBBUF            ; build this frame's text cells, then
+        ld a,(FRAMES)           ; paint the letters snake-style: each
+        add a,a                 ; 8-column character rides its own point
+        cpl                     ; of a travelling wave (running against
+        ld (WPH),a              ; the scroll, like the small snake)
+        ld b,4                  ; four character groups
+        ld c,0                  ; group column base: 0, 8, 16, 24
+.grp:
+        push bc
+        ld a,c                  ; wave sample: phase + group * quarter
         add a,a
-        ld h,HIGH SINTAB
+        add a,a
+        add a,a
+        ld e,a
+        ld a,(WPH)
+        add a,e
         ld l,a
-        ld c,(hl)               ; C = top row of the 8-row band
-        ld a,c
-        cp 14                   ; the taller band bounces 0..13
-        jr c,.fit
-        ld c,13
-.fit:
+        ld h,HIGH SINTAB
+        ld a,(hl)
+        cp 14                   ; 8-row letters ride offsets 0..13
+        jr c,.ok
+        ld a,13
+.ok:
+        ld d,a                  ; D = this group's vertical offset
         ld a,(TITLEF)
         cp 164
-        jr nc,.free
-        ld a,c                  ; title up: keep the band off row 0
+        jr nc,.tok
+        ld a,d                  ; title up: keep the group off row 0
         or a
-        jr nz,.free
-        inc c
-.free:
-        ld de,ATTRS
-        ld hl,BBUF+1            ; orm bytes
-        ld a,c
-        or a
-        jr z,.band
-        ld b,a                  ; zero the rows above the letters
-.z1:
-        push bc
-        call ZROW32
-        pop bc
-        djnz .z1
-.band:
-        ld b,8                  ; the letters: BBUF holds finished attrs
-.b1:
-        push bc
-        REPT 32
-        ld a,(hl)
-        ld (de),a
-        inc l                   ; BBUF is one page: L walks it alone
-        inc de
+        jr nz,.tok
+        inc d
+.tok:
+        ld h,HIGH ATTRS         ; HL = dest column base (attrs are linear)
+        ld l,c
+        ld ixh,HIGH BBUF        ; IX = source walker in BBUF's page
+        ld ixl,c
+        ld b,0                  ; B = attr row 0..20
+.row:
+        ld a,b
+        sub d                   ; rows inside [offset, offset+8) show the
+        cp 8                    ; letter strip; the rest show backdrop
+        jr c,.copy
+        ld a,$09
+        REPT 8
+        ld (hl),a
+        inc hl                  ; 16-bit: group 3 crosses attr pages
         EDUP
+        jr .step
+.copy:
+        REPT 8, Q               ; Q: the name N is a global elsewhere and
+        ld a,(ix+Q)             ; shadows the iterator
+        ld (hl),a
+        inc hl
+        EDUP
+        ld a,ixl                ; next letter row (BBUF is one page)
+        add a,32
+        ld ixl,a
+.step:
+        ld a,l                  ; dest: on to the next attr row
+        add a,24
+        ld l,a
+        jr nc,.nr
+        inc h
+.nr:
+        inc b
+        ld a,b
+        cp 21
+        jr nz,.row
         pop bc
+        ld a,c
+        add a,8
+        ld c,a
         dec b
-        jp nz,.b1
-        ld a,13                 ; backdrop rows below (down to row 20)
-        sub c
-        ret z                   ; band at the bottom: nothing below it
-        ld b,a
-.z2:
-        push bc
-        call ZROW32
-        pop bc
-        djnz .z2
+        jp nz,.grp
         ret
 
-ZROW32:                         ; one backdrop-coloured attr row at DE
-        ld a,$09
-        REPT 32
-        ld (de),a
-        inc de
-        EDUP
-        ret
+WPH:    db 0
 
 ; ---------------------------------------------------------------- BIGBBUF
 ; Build the giant scroller's 8x32 attr bytes from BIGPOS: one FULL attr
@@ -1184,19 +1201,13 @@ YATTRS:                         ; the dojo stage: just the mat (fighter
         djnz .mata
         ret
 
-        MACRO PDOWN             ; HL = screen byte one scanline down
-        inc h
-        ld a,h
-        and 7
-        jr nz,.pd
-        ld a,l
-        add a,32
+        MACRO BUFDOWN           ; HL = buffer byte one scanline down
+        ld a,l                  ; (the off-screen raster is linear:
+        add a,8                 ;  8 bytes a row, no screen-third gymnastics)
         ld l,a
-        jr c,.pd
-        ld a,h
-        sub 8
-        ld h,a
-.pd:
+        jr nc,.bd
+        inc h
+.bd:
         ENDM
 
 ; ------------------------------------------------------------------- LINE
@@ -1245,9 +1256,9 @@ LINE:
         ld (.xadj),a
         ld (.xadj2),a
 .setup:
-        ld e,d                  ; PIXADDR wants D=y, E=x
+        ld e,d                  ; BUFADDR wants D=y, E=x
         ld d,b
-        call PIXADDR
+        call BUFADDR
         ld d,a                  ; D = pixel mask from here on
         ld a,(DYV)
         ld b,a
@@ -1277,7 +1288,7 @@ LINE:
         jr nc,.nx2
 .xa:    add a,0
         ld c,a
-        PDOWN
+        BUFDOWN
 .nx2:
         djnz .xl
         ret
@@ -1296,7 +1307,7 @@ LINE:
         ld a,(hl)
         or d
         ld (hl),a
-        PDOWN
+        BUFDOWN
         ld a,c
         sub e
         ld c,a
@@ -1316,6 +1327,36 @@ X1:     db 0
 Y1:     db 0
 DXV:    db 0
 DYV:    db 0
+
+BUFADDR:                        ; D = y (64-127), E = x (96-159) ->
+        ld a,d                  ; HL = off-screen raster byte, A = mask
+        sub 64
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 31
+        sub 12
+        ld c,a
+        ld b,0
+        add hl,bc
+        ld bc,CBUF
+        add hl,bc
+        ld a,e
+        and 7
+        ld c,a
+        ld b,0
+        push hl
+        ld hl,MASKS
+        add hl,bc
+        ld a,(hl)
+        pop hl
+        ret
 
 PIXADDR:                        ; D = y, E = x -> HL = bitmap byte, A = mask
         ld a,d
@@ -1630,7 +1671,7 @@ GNEXT:                          ; wipe, caption, load surface GIDX
         ld a,$C6                ; flashing bright yellow, double height
         ld (BCOL),a
         ld hl,MCTXT
-        ld b,12
+        ld b,13
 .cap:
         ld a,(hl)
         inc hl
@@ -1667,7 +1708,7 @@ GNEXT:                          ; wipe, caption, load surface GIDX
         ld (GFAST),a
         ret
 
-MCTXT:  db "MACHINE CODE"
+MCTXT:  db "PRECALCULATED"
 
 HCOL:   db $47,$46,$44,$45,$43,$41,$41,$41  ; height bands, peak first
 GFAST:  db 0
@@ -1783,13 +1824,10 @@ TBUF:   ds 256                  ; column-major scroller buffer, 32 cols x 8
 ; behind the big fella - opposite relative motion, deeper parallax.  He
 ; leaves the stage entirely for part of each pass.
 MINIWALK:
-        ld a,(TITLEF)           ; he waits in the wings until the title
-        cp 164                  ; card has gone - those are the scene's
-        ret c                   ; most expensive frames
-        ld a,(FRAMES)           ; then hurries past at a step per 2
-        srl a                   ; frames, timed so the whole crossing
-        add a,44                ; fits in what's left of the slot
-        and 127
+        ld a,(FRAMES)           ; two crossings a slot, a step per 2
+        srl a                   ; frames - he's around most of the time
+        add a,44
+        and 63
         cp 40
         ret nc                  ; resting off stage
         ld b,a
@@ -2170,72 +2208,47 @@ ZERO12: ds 12
 ; The vector cube: erase last frame's 12 edges, draw this frame's, from
 ; 128 baked projections.  A full tumble every 2.56 seconds at 50 fps.
 CUBE:
-        ld a,(PREVK)
-        inc a
-        jr z,.fresh             ; new stage: nothing to wipe
-        dec a
-        call CUBEWIPE
-.fresh:
-        ld a,(FRAMES)
-        and 127
-        ld (PREVK),a
-        call CUBEDRAW
-        jp MINIS                ; then the companions in the corners
-
-CUBEWIPE:                       ; A = frame idx: wipe cols 10-21 over just
-        ld l,a                  ; that frame's vertical extent
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld de,CUBEDAT
-        add hl,de
-        ld b,8
-        ld c,255                ; min sy
-        ld e,0                  ; max sy
-.scan:
-        inc hl                  ; skip sx
-        ld a,(hl)
-        inc hl
-        cp c
-        jr nc,.a
-        ld c,a
-.a:
-        cp e
-        jr c,.b
-        ld e,a
-.b:
-        djnz .scan
-        ld b,c
-.line:
-        ld a,b
+        ld a,(FRAMES)           ; the raster only ever sees COMPLETE cube
+        and 1                   ; images: even frames copy the off-screen
+        jr nz,.raster           ; raster to the screen (finishing before
+        ld hl,CBUF              ; the beam gets there), clearing it behind;
+        ld c,64                 ; odd frames draw the next pose off-screen
+.cp:
+        ld a,c
         and 7
-        ld h,a
-        ld a,b
+        ld d,a
+        ld a,c
         rra
         rra
         rra
         and 24
-        or h
+        or d
         or 64
-        ld h,a
-        ld a,b
+        ld d,a
+        ld a,c
         rla
         rla
         and $E0
-        or 10
-        ld l,a
-        xor a
-        REPT 12
-        ld (hl),a
-        inc l
+        or 12                   ; byte cols 12-19
+        ld e,a
+        REPT 8
+        ld a,(hl)
+        ld (de),a
+        ld (hl),0
+        inc hl
+        inc e
         EDUP
-        inc b
-        ld a,e
-        cp b
-        jr nc,.line
-        ret
+        inc c
+        ld a,c
+        cp 128
+        jr nz,.cp
+        jp MINIS
+.raster:
+        ld a,(FRAMES)
+        rrca
+        and 127                 ; pose advances every other frame
+        call CUBEDRAW
+        jp MINIS                ; then the companions in the corners
 
 CUBEDRAW:                       ; A = baked frame index
         ld l,a                  ; VB = CUBEDAT + A*16
@@ -2541,20 +2554,22 @@ BDATA:                          ; col, row, attr, len, text...
         db "M=MUSIC  Q=QUIT"
         db $FF
 
-CUBESET:                        ; scene entry: dark stage, rainbow rings
-        call STARSET
+CUBESET:                        ; scene entry: dark stage, rainbow rings,
+        call STARSET            ; empty off-screen raster
         ld hl,CUBEATTR
         ld de,ATTRS
         ld bc,672
         ldir
-        ld a,255
-        ld (PREVK),a
+        ld hl,CBUF
+        ld de,CBUF+1
+        ld bc,511
+        ld (hl),0
+        ldir
         ret
 
 CEDGES: db 0,2, 4,6, 8,10, 12,14
         db 0,4, 2,6, 8,12, 10,14
         db 0,8, 2,10, 4,12, 6,14
-PREVK:  db 255
 VB:     dw 0
 EDGN:   db 0
 CUBEDAT:
