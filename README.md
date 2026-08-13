@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-ZX%20Spectrum%2048K-ff3df0)](#run-it-in-30-seconds)
 [![Language](https://img.shields.io/badge/language-Z80%20assembler-2f74c0)](src/main.asm)
 [![Frame rate](https://img.shields.io/badge/frame%20rate-locked%2050%20fps-34d399)](#how-it-holds-50-fps)
-[![Sound](https://img.shields.io/badge/sound-1--bit%20beeper-f4d03f)](#the-music)
+[![Sound](https://img.shields.io/badge/sound-1--bit%20beeper-f4d03f)](#how-it-holds-50-fps)
 [![Release](https://img.shields.io/github/v/release/danamini/aura-tunnel?color=ff3df0&label=release)](https://github.com/danamini/aura-tunnel/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT%20(see%20note)-lightgrey)](LICENSE)
 
