@@ -441,4 +441,58 @@ write("g3d0.bin", bake_graph(ripple))
 write("g3d1.bin", bake_graph(eggbox, 4))
 write("g3d2.bin", bake_graph(saddle, 4))
 
+# ------------------------------------------------------- dot-flow tunnels
+# The chunky tunnels' replacement: hi-res dots streaming outward along
+# baked trajectories.  Per geometry: 12 angles x 32 depth steps x [x, y],
+# perspective baked as an accelerating radius.  Dots are single pixels;
+# the rainbow ring attrs colour them by radius.
+def dot_geo(shape):
+    out = bytearray()
+    for ai in range(12):
+        a = 2 * math.pi * ai / 12
+        sc = shape(a)
+        for d in range(32):
+            t = d / 31.0
+            r = (5 + 108 * t * t) * sc
+            x = round(128 + r * math.cos(a))
+            y = round(92 + r * 0.72 * math.sin(a))
+            assert 4 <= x <= 251 and 4 <= y <= 183, (x, y)
+            out += bytes((x, y))
+    return out
+
+dots = bytearray()
+dots += dot_geo(lambda a: 1.0)                                   # tube
+dots += dot_geo(lambda a: 0.72 / max(abs(math.cos(a)), abs(math.sin(a))))
+dots += dot_geo(lambda a: 0.82 * (1.0 + 0.30 * math.cos(4 * a)))  # star
+assert len(dots) == 2304
+write("dots.bin", dots)
+
+# --------------------------------------------- giant-letter wave columns
+# One routine per vertical offset 0..13: paints a single attr COLUMN of
+# the big-type scene (21 rows, stride 32, page steps baked at rows 7/15):
+# backdrop above, the 8 letter rows from BBUF, backdrop below.  Letters
+# sample the wave by their position in the text, so each character bobs
+# whole - no tearing at screen-quarter boundaries.
+# Entry: HL = ATTRS+col, IX = BBUF+col+100 (bias keeps displacements
+# signed), E = backdrop colour.
+bw = []
+for K in range(14):
+    src = [f"BW{K}:"]
+    for r in range(21):
+        if K <= r < K + 8:
+            src.append(f"        ld a,(ix{(r-K)*32-100:+d})")
+            src.append("        ld (hl),a")
+        else:
+            src.append("        ld (hl),e")
+        if r in (7, 15):
+            src.append("        inc h")
+        if r < 20:
+            src += ["        ld a,l", "        add a,32", "        ld l,a"]
+    src.append("        ret")
+    bw.append("\n".join(src))
+out_bw = "\n".join(bw) + "\nBWJ:\n        dw " +     ", ".join(f"BW{K}" for K in range(14)) + "\n"
+with open(os.path.join(out, "bigwave.asm"), "w") as f:
+    f.write(out_bw)
+print("  bigwave.asm: 14 variants")
+
 print("tables OK")

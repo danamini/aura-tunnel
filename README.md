@@ -5,7 +5,6 @@
 [![Platform](https://img.shields.io/badge/platform-ZX%20Spectrum%2048K-ff3df0)](#run-it-in-30-seconds)
 [![Language](https://img.shields.io/badge/language-Z80%20assembler-2f74c0)](src/main.asm)
 [![Frame rate](https://img.shields.io/badge/frame%20rate-locked%2050%20fps-34d399)](#how-it-holds-50-fps)
-[![Sound](https://img.shields.io/badge/sound-1--bit%20beeper-f4d03f)](#how-it-holds-50-fps)
 [![Release](https://img.shields.io/github/v/release/danamini/aura-tunnel?color=ff3df0&label=release)](https://github.com/danamini/aura-tunnel/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT%20(see%20note)-lightgrey)](LICENSE)
 
@@ -57,19 +56,18 @@ then start the tape. It is a 48K program and runs on any 48K/128K machine.
 
 | Key | Action |
 |-----|--------|
-| `M` | toggle the beeper music |
 | `Q` | quit (resets the machine to BASIC) |
 
 ## The show
 
 | # | Scene | What's happening underneath |
 |---|-------|------------------------------|
-| 1 | **BRIEFING** | Double-height ROM-font mission text types on, with a flashing status line |
-| 2 | **TUBE** | The chunky attribute tunnel: SP pops baked maps at 43 T-states a cell |
-| 3 | **STAR SNAKE** | A sine-wave text scroller, every character at its own height, under drifting stars |
-| 4 | **BOX** | The tunnel again with square geometry |
-| 5 | **BIG TYPE** | 64×64-pixel gradient letters bouncing on a sine |
-| 6 | **STAR** | The tunnel, star-shaped |
+| 1 | **BRIEFING** | Double-height mission text types on behind a blinking block cursor |
+| 2 | **TUBE** | A hi-res dot-flow tunnel: rings of pixels streaming outward along baked trajectories, spinning and bending on a travelling sine |
+| 3 | **STAR SNAKE** | A sine-wave text scroller under two layers of drifting stars and a tumbling satellite |
+| 4 | **BOX** | The dot tunnel with square geometry — its own spin direction and a stronger bend |
+| 5 | **BIG TYPE** | 64×64-pixel gradient letters, each character riding its own point of a travelling wave |
+| 6 | **STAR** | The dot tunnel star-shaped, with double-speed dots |
 | 7 | **SUNSET RUN** | An articulated stick man on a parallax speed-line floor, with a half-size companion behind him |
 | 8 | **VECTOR CUBE** | True hi-res Bresenham wireframe tumbling in perspective, four baked companion cubes in the corners |
 | 9 | **DEEP SPACE** | 48 coloured stars in three parallax layers |
@@ -104,12 +102,12 @@ The smoke test drives ZEsarUX over its ZRCP remote protocol: it reads the demo's
 
 A PAL Spectrum frame is 69,888 T-states of a 3.5MHz Z80 — and there's no double buffer here, so every scene draws ahead of the raster beam, top-down, each cell written exactly once per frame.
 
-- **Chunky 32×42 half-block mode** — every cell's bitmap is top-half `$00`, bottom-half `$FF`, so PAPER colours the top half-block and INK the bottom. A whole tunnel frame is 672 attribute writes.
+- **Chunky 32×42 half-block mode** — every cell's bitmap is top-half `$00`, bottom-half `$FF`, so PAPER colours the top half-block and INK the bottom: how the big letters, runner and fighters render in colour.
 - **The stack pointer is the renderer** — inner loops `POP` baked map bytes two at a time with interrupts off. Nothing may `CALL` while SP walks data; returns are self-modified `JP`s.
 - **Per-frame 256-byte LUTs** — rotation and forward motion collapse into one table rebuild, then the hot loop is pure lookups. Motion and rotation are 8.8 fixed-point accumulators.
 - **Self-modifying code everywhere** — scene dispatch, plot direction, colour masks, loop bounds and sprite pointers are all patched immediates.
 - **Baked everything** — 128 cube rotations, 8 stick-man poses, hidden-line graph points, even the companion cubes are pre-rasterized sprites because real Bresenham is too dear at 16×16.
-- **The music rides the slack** — one baked note burst per frame in whatever T-states the scene left over, half-length in the three tightest scenes.
+- **Scene changes wipe** — a white bar sweeps down consuming the outgoing scene during its final half-second.
 
 Memory is effectively full: code and hot data above `$8000` (uncontended), cold one-shot code and sprite data from `$5E00`, baked tables from `$A000` to the top, with the per-frame LUT at `$FF00`.
 

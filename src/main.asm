@@ -58,6 +58,9 @@ BBUF     EQU $DF00              ; giant-scroller overlay masks: 4 rows x 32
 SHADEP0  EQU $E000              ; cool palette shade tables, same layout
 SHADEI0  EQU $E800
 CBUF     EQU $5B00              ; the cube's 8x64-byte off-screen raster
+DOTS     EQU $A000              ; dot records, in the dead map region:
+                                ;   64 x [angle|fast<<7, depth, prevaddr, mask, pad]
+DOTTAB   EQU $F000              ; baked trajectories: 3 geometries
 STACK    EQU $FA00
 IM2TAB   EQU $FB00              ; 257 bytes of $FC
 IM2VEC   EQU $FCFC              ; RETI
@@ -90,8 +93,8 @@ MAIN:
         call ROWCOLOURS
         call SCROLLER
         call TITLE
-        call MUSIC              ; honours the M-key toggle
-        call KEYS               ; M toggles music, Q quits to BASIC
+        ;call MUSIC             ; parked: the score needs real work
+        call KEYS               ; Q quits to BASIC
         jp MAIN
 
 ; ----------------------------------------------------------------- UPDATE
@@ -131,6 +134,26 @@ UPDATE:
         jr z,.tf
         ld (TITLEF),a
 .tf:
+        ld a,(FRAMES)           ; 24 frames before a scene CHANGE, arm
+        cp 232                  ; the wipe: a line will eat the old scene
+        jr nz,.nwm
+        ld a,(SEQPOS)           ; peek the next slot
+        inc a
+        cp SEQLEN
+        jr c,.wpk
+        xor a
+.wpk:
+        ld e,a
+        ld d,0
+        ld hl,SEQ
+        add hl,de
+        ld a,(hl)
+        ld hl,SCENE
+        cp (hl)
+        jr z,.nwm               ; held scene: no wipe
+        xor a
+        ld (WIPEF),a
+.nwm:
 
         ld a,(FRAMES)           ; every 256 frames: next playlist slot.
         or a                    ; This must happen BEFORE the vectors below,
@@ -165,9 +188,9 @@ UPDATE:
         ld (BUILDLUT.pal+1),a
         ld a,(SCENE)
         cp 3
-        jr nc,.nott             ; any tunnel scene: clean bottom rows and
-        call CLRBOTTOM          ; re-lay the chunky half-blocks (they now
-        call CHUNKALL           ; arrive from all kinds of dark stages)
+        jr nc,.nott             ; any tunnel scene: dark stage, ring
+        call DOTSET             ; colours, a fresh spread of dots
+        call CLRBOTTOM
 .nott:
         ld a,(SCENE)
         cp 3
@@ -263,17 +286,45 @@ UPDATE:
         cp 6
         jr z,.stick             ; scene 6: the big fella walks
         cp 7
-        jr z,.stars             ; scene 7: deep space
+        jp z,.stars             ; scene 7: deep space
         cp 8
-        jr z,.yiear             ; scene 8: the dojo
+        jp z,.yiear             ; scene 8: the dojo
         cp 9
-        jr z,.brief             ; scene 9: the mission briefing
+        jp z,.brief             ; scene 9: the mission briefing
         cp 10
-        jr z,.graph             ; scene 10: hidden-line surface plots
-        ld hl,BUILDLUT          ; scenes 0-2: plain chunky tunnel
+        jp z,.graph             ; scene 10: hidden-line surface plots
+        ld hl,NOOP              ; scenes 0-2: the dot-flow tunnels
         ld (MAIN.bld+1),hl
-        ld hl,RENDER
+        ld hl,DOTT
         ld (MAIN.rnd+1),hl
+        ld a,(SCENE)            ; this tunnel's baked geometry (x768)
+        ld b,a
+        add a,a
+        add a,b
+        ld h,a
+        ld l,0
+        ld de,DOTTAB
+        add hl,de
+        ld (DGEO),hl
+        ld a,(SCENE)            ; and its personality: [spin cadence,
+        add a,a                 ; spin step, bend speed, dot speed]
+        add a,a
+        add a,a                 ; rows padded to eight bytes
+        ld e,a
+        ld d,0
+        ld hl,PTAB
+        add hl,de
+        ld a,(hl)
+        ld (DSPM),a
+        inc hl
+        ld a,(hl)
+        ld (DSPD),a
+        inc hl
+        ld a,(hl)
+        ld (DBST),a
+        inc hl
+        ld a,(hl)
+        ld (DOTT.spd+1),a
         jr .vec
 .solo:
         ld hl,NOOP              ; no tunnel, no LUT - but a few stars
@@ -336,6 +387,16 @@ UPDATE:
         ld a,1
 .ms:
         ld (MHALF),a
+        ld a,(WIPEF)            ; a wipe in progress overrides the scene:
+        cp 24                   ; the old image freezes and the line
+        jr nc,.nw               ; consumes it row by row
+        inc a
+        ld (WIPEF),a
+        ld hl,NOOP
+        ld (MAIN.bld+1),hl
+        ld hl,WIPER
+        ld (MAIN.rnd+1),hl
+.nw:
         ret
 
 ; --------------------------------------------------------------- BUILDLUT
@@ -430,83 +491,69 @@ RENDER:
 ; ANDed with anything is 0), so rows 16-19 are a straight copy of BBUF's
 ; odd bytes.  Full 50 fps, a fraction of the old cost.
 RENDER4S:
-        call BIGBBUF            ; build this frame's text cells, then
-        ld a,(FRAMES)           ; paint the letters snake-style: each
-        add a,a                 ; 8-column character rides its own point
-        cpl                     ; of a travelling wave (running against
-        ld (WPH),a              ; the scroll, like the small snake)
-        ld b,4                  ; four character groups
-        ld c,0                  ; group column base: 0, 8, 16, 24
-.grp:
-        push bc
-        ld a,c                  ; wave sample: phase + group * quarter
-        add a,a
+        call BIGBBUF            ; build the letter cells, then paint each
+        ld c,0                  ; column at its CHARACTER's wave height -
+.col:                           ; the wave travels with the text, so a
+        ld hl,(BIGPOS)          ; letter never tears across a boundary
+        ld e,c
+        ld d,0
+        add hl,de
+        srl h                   ; which character owns this column
+        rr l
+        srl l
+        srl l
+        ld a,l
+        and 63
+        ld e,a                  ; wave index = char*12 + frame*2: close
+        add a,a                 ; phases, so each letter follows its
+        add a,e                 ; neighbour up and down the wave
         add a,a
         add a,a
         ld e,a
-        ld a,(WPH)
+        ld a,(FRAMES)
+        add a,a
         add a,e
         ld l,a
         ld h,HIGH SINTAB
         ld a,(hl)
         cp 14                   ; 8-row letters ride offsets 0..13
-        jr c,.ok
+        jr c,.o1
         ld a,13
-.ok:
-        ld d,a                  ; D = this group's vertical offset
+.o1:
+        ld e,a
         ld a,(TITLEF)
         cp 164
-        jr nc,.tok
-        ld a,d                  ; title up: keep the group off row 0
+        jr nc,.o2
+        ld a,e                  ; title up: stay off row 0
         or a
-        jr nz,.tok
-        inc d
-.tok:
-        ld h,HIGH ATTRS         ; HL = dest column base (attrs are linear)
-        ld l,c
-        ld ixh,HIGH BBUF        ; IX = source walker in BBUF's page
-        ld ixl,c
-        ld b,0                  ; B = attr row 0..20
-.row:
-        ld a,b
-        sub d                   ; rows inside [offset, offset+8) show the
-        cp 8                    ; letter strip; the rest show backdrop
-        jr c,.copy
-        ld a,$09
-        REPT 8
-        ld (hl),a
-        inc hl                  ; 16-bit: group 3 crosses attr pages
-        EDUP
-        jr .step
-.copy:
-        REPT 8, Q               ; Q: the name N is a global elsewhere and
-        ld a,(ix+Q)             ; shadows the iterator
-        ld (hl),a
-        inc hl
-        EDUP
-        ld a,ixl                ; next letter row (BBUF is one page)
-        add a,32
-        ld ixl,a
-.step:
-        ld a,l                  ; dest: on to the next attr row
-        add a,24
+        jr nz,.o2
+        inc e
+.o2:
+        ld a,e
+        add a,a                 ; dispatch the offset's column painter
         ld l,a
-        jr nc,.nr
-        inc h
-.nr:
-        inc b
-        ld a,b
-        cp 21
-        jr nz,.row
-        pop bc
+        ld h,0
+        ld de,BWJ
+        add hl,de
+        ld a,(hl)
+        ld (.cw+1),a
+        inc hl
+        ld a,(hl)
+        ld (.cw+2),a
+        ld h,HIGH ATTRS
+        ld l,c
+        ld e,c
+        ld d,0
+        ld ix,BBUF+100
+        add ix,de
+        ld e,$09
+.cw:
+        call 0                  ; BW0..BW13
+        inc c
         ld a,c
-        add a,8
-        ld c,a
-        dec b
-        jp nz,.grp
+        cp 32
+        jp nz,.col
         ret
-
-WPH:    db 0
 
 ; ---------------------------------------------------------------- BIGBBUF
 ; Build the giant scroller's 8x32 attr bytes from BIGPOS: one FULL attr
@@ -828,6 +875,44 @@ GPATFAST:
         INCBIN "build/gpat.bin"
 GPATSLOW EQU GPATFAST+128
 
+WIPER:                          ; the transition: a blazing bar sweeping
+        ld a,(WIPEF)            ; down, blackness behind it
+        dec a
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,ATTRS
+        add hl,de
+        ld a,$7F
+        REPT 32
+        ld (hl),a
+        inc hl
+        EDUP
+        ld a,(WIPEF)
+        sub 2
+        ret m                   ; the first row has nothing above it
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,ATTRS
+        add hl,de
+        xor a
+        REPT 32
+        ld (hl),a
+        inc hl
+        EDUP
+        ret
+
+WIPEF:  db 255
+
 CLRBOTTOM:                      ; rows 21-23 attrs black: tunnels run clean
         ld hl,SCROLATT
         ld de,SCROLATT+1
@@ -939,14 +1024,39 @@ STARSET:
 STARS:
         ld a,16
         jr STARGO
-STARSFEW:                       ; snake scene: one bright layer only -
-        ld a,$00                ; the frame budget goes to the wave
+STARSFEW:                       ; the snake's sky: two star layers and
+        ld a,$00                ; a companion cube tumbling up there
         ld (STARGRP.dxl+1),a
         ld a,3
         ld (STARGRP.dxh+1),a
         ld ix,STARDAT
         ld b,8
-        jp STARGRP
+        call STARGRP
+        ld a,$80
+        ld (STARGRP.dxl+1),a
+        ld a,1
+        ld (STARGRP.dxh+1),a
+        ld ix,STARDAT+64
+        ld b,8
+        call STARGRP
+        ld a,(FRAMES)           ; the satellite
+        rrca
+        rrca
+        rrca
+        and 31
+        ld b,24
+        ld c,25
+        call MONE
+        ld hl,ATTRS+3*32+25     ; its colour cells, bright cyan
+        ld a,$45
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        ld hl,ATTRS+4*32+25
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        ret
 STARGO:
         ld iyl,a
         ld a,$00                ; near layer: 3.0 px/frame
@@ -2188,7 +2298,7 @@ TITLESET:                       ; scene change: bake the strip, start the clock
         ret
 
 TITLEF: db 255
-TCHUNK: db 1,1,1,0,0,1,1,0,0,0,0 ; which scenes want chunky repair
+TCHUNK: db 0,0,0,0,0,1,1,0,0,0,0 ; which scenes want chunky repair
 TITLES:
         db "TUBE        "
         db "BOX         "
@@ -2384,6 +2494,7 @@ MCBLIT:                         ; DE = 32 bytes, B = top y, C = x byte
 ; written twice - 8x16 characters) typing on line by line in colour
 ; blocks, one character every other frame, ending on a flashing status.
 BRIEF:
+        call BCURSOR            ; the cursor blinks every frame
         ld a,(FRAMES)
         and 1
         ret nz                  ; one character every other frame
@@ -2525,6 +2636,12 @@ BRIEFSET:
         ld (BPTR),hl
         xor a
         ld (BLEFT),a
+        ld a,2                  ; park the cursor at the first line
+        ld (BCX),a
+        ld a,3
+        ld (BROW),a
+        ld a,$46
+        ld (BCOL),a
         ret
 
 BPTR:   dw BDATA
@@ -2534,24 +2651,24 @@ BROW:   db 0
 BCOL:   db 0
 
 BDATA:                          ; col, row, attr, len, text...
-        db  2,3,$46,7
-        db "MISSION"
-        db  2,5,$46,7
-        db "PROFILE"
-        db 19,3,$43,6
-        db "SYSTEM"
-        db 19,5,$43,6
-        db "ONLINE"
-        db 11,9,$47,9
-        db "LOCKED ON"
-        db 13,11,$47,6
-        db "TARGET"
-        db 10,15,$C4,11
-        db "ALL SYSTEMS"
+        db  2,3,$46,4
+        db "AURA"
+        db  2,5,$46,6
+        db "TUNNEL"
+        db 21,3,$43,3
+        db "48K"
+        db 20,5,$43,6
+        db "50 FPS"
+        db  9,9,$47,13
+        db "ELEVEN SCENES"
+        db  7,11,$47,17
+        db "EVERYTHING BAKED."
+        db  8,14,$47,15
+        db "RACING THE BEAM"
         db 13,17,$C4,5
-        db "GREEN"
-        db  8,20,$05,15
-        db "M=MUSIC  Q=QUIT"
+        db "READY"
+        db 13,20,$05,6
+        db "Q=QUIT"
         db $FF
 
 CUBESET:                        ; scene entry: dark stage, rainbow rings,
@@ -2629,16 +2746,223 @@ SKYREV:                         ; sunset stripes, indexed by the row
         db 0,0,0,0,0,0          ; rows  1-6:  night above
         ASSERT $ <= $8000
 
-        ORG SHADEP1
-        INCBIN "build/shadep1.bin"
-        ORG SHADEI1
-        INCBIN "build/shadei1.bin"
+        ORG SHADEP1             ; the warm shade tables died with the
+; ------------------------------------------------------------------- DOTT
+; The dot-flow tunnel: 72 dots in six coherent rings streaming outward
+; along baked trajectories.  A travelling sine indexed by DEPTH bends the
+; whole tube as it flies; each geometry has its own spin cadence and
+; direction, bend speed and dot velocity (PTAB), so tube, box and star
+; each move differently.
+DOTT:
+        ld ix,DOTS
+        ld b,72
+.dt:
+        push bc
+        ld l,(ix+2)             ; unplot at the cached address
+        ld h,(ix+3)
+        ld a,(ix+4)
+        cpl
+        and (hl)
+        ld (hl),a
+        ld a,(ix+1)
+.spd:   add a,1                 ; self-modified: this tunnel's velocity
+        and 31
+        ld (ix+1),a
+        ld a,(ix+0)             ; angle + the field's spin, mod 12
+        ld e,a
+        ld a,(DROT)
+        add a,e
+        cp 12
+        jr c,.am
+        sub 12
+.am:
+        ld l,a                  ; HL = table row (angle * 64 + depth * 2)
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld a,(ix+1)
+        add a,a
+        ld e,a
+        ld d,0
+        add hl,de
+        ld de,(DGEO)
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld a,(ix+1)             ; the bend: a sine travelling down the
+        add a,a                 ; tube, sampled by depth - near and far
+        add a,a                 ; rings sway out of phase
+        ld c,a
+        ld a,(BPH)
+        add a,c
+        ld l,a
+        ld h,HIGH SINTAB
+        ld a,(hl)
+        srl a
+        sub 4                   ; +/-4 horizontally...
+        add a,e
+        ld e,a
+        ld a,l
+        add a,64
+        ld l,a
+        ld a,(hl)
+        srl a
+        sub 4                   ; ...and a quarter-phase vertical sway
+        add a,d
+        ld d,a
+        call PIXADDR
+        ld c,a
+        or (hl)
+        ld (hl),a
+        ld (ix+2),l             ; remember where we are for next frame
+        ld (ix+3),h
+        ld (ix+4),c
+        ld bc,6
+        add ix,bc
+        pop bc
+        djnz .dt
+        ld a,(DBST)             ; the bend crawls down the tube
+        ld e,a
+        ld a,(BPH)
+        add a,e
+        ld (BPH),a
+        ld a,(DSPM)             ; spin at this tunnel's cadence...
+        ld e,a
+        ld a,(FRAMES)
+        and e
+        ret nz
+        ld a,(DSPD)             ; ...in its own direction (11 = -1 mod 12)
+        ld e,a
+        ld a,(DROT)
+        add a,e
+        cp 12
+        jr c,.dr
+        sub 12
+.dr:
+        ld (DROT),a
+        ret
+
+DGEO:   dw DOTTAB
+DROT:   db 0
+BPH:    db 0
+DSPM:   db 7
+DSPD:   db 1
+DBST:   db 2
+PTAB:                           ; spin cadence mask, spin step, bend, speed
+        db 7,1,2,1, 0,0,0,0     ; TUBE: stately clockwise, gentle bend
+        db 3,11,5,1, 0,0,0,0    ; BOX: busy anticlockwise, strong bend
+        db 7,1,3,2, 0,0,0,0     ; STAR: double-speed dots
+
+        INCLUDE "build/bigwave.asm"
+
+BCURSOR:                        ; a double-height block leading the
+        ld hl,(BPTR)            ; type-on; solid off the beat, gone on it
+        ld a,(hl)
+        cp $FF
+        jr nz,.live
+        xor a                   ; message complete: cursor rests
+        jr .draw
+.live:
+        ld a,(FRAMES)
+        and 16
+        jr nz,.draw             ; A = 16 -> blank phase? no: draw solid
+        ld a,$FF
+        jr .draw2
+.draw:
+        xor a
+.draw2:
+        ld c,a
+        ld a,(BROW)
+        call ROWADDR
+        ld a,c
+        REPT 8
+        ld (hl),a
+        inc h
+        EDUP
+        ld a,(BROW)
+        inc a
+        call ROWADDR
+        ld a,c
+        REPT 8
+        ld (hl),a
+        inc h
+        EDUP
+        ld a,(BROW)             ; the cursor cell takes the line colour
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld a,(BCX)
+        ld c,a
+        ld b,0
+        add hl,bc
+        ld bc,ATTRS
+        add hl,bc
+        ld a,(BCOL)
+        ld (hl),a
+        ld bc,32
+        add hl,bc
+        ld (hl),a
+        ret
+
+DOTSET:                         ; tunnel stage: dark, ringed, dots spread
+        call STARSET
+        ld hl,CUBEATTR
+        ld de,ATTRS
+        ld bc,672
+        ldir
+        ld ix,DOTS
+        ld b,72
+        ld c,0                  ; angle round-robin
+        ld d,0                  ; ring depth
+.i:
+        ld a,c
+        ld (ix+0),a
+        ld a,d
+        and 31
+        ld (ix+1),a
+        ld a,LOW CBUF           ; harmless first unplot target
+        ld (ix+2),a
+        ld a,HIGH CBUF
+        ld (ix+3),a
+        xor a
+        ld (ix+4),a
+        push bc
+        ld bc,6
+        add ix,bc
+        pop bc
+        inc c
+        ld a,c
+        cp 12
+        jr c,.k
+        ld c,0                  ; ring complete: the next one is five
+        ld a,d                  ; depth steps behind - coherent rings
+        add a,5                 ; flying at you, not a starburst
+        ld d,a
+.k:
+        djnz .i
+        xor a
+        ld (DROT),a
+        ret
+        ASSERT $ <= MAPS        ; chunky tunnels; the dots live here now
+
         ORG MAPS
         INCBIN "build/maps.bin"
         ORG SHADEP0
         INCBIN "build/shadep0.bin"
         ORG SHADEI0
         INCBIN "build/shadei0.bin"
+        ORG DOTTAB
+        INCBIN "build/dots.bin"
+
         ORG IM2TAB
         DS 257, HIGH IM2VEC
         ORG IM2VEC

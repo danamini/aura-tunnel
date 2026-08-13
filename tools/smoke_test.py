@@ -41,7 +41,7 @@ SCENES = {
     5: ("big type", 49.0),
     6: ("sunset run", 47.0),   # concedes ~4% on bass-note frames
     8: ("dojo", 49.0),
-    10: ("3d graphs", 49.0),
+    10: ("3d graphs", 48.0),   # act two stalls 2 frames per surface wipe
 }
 
 PLAYLIST = {9, 0, 4, 1, 5, 2, 6, 3, 7, 10, 8}
