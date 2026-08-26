@@ -397,13 +397,17 @@ print(f"  bigscr.asm: 8 descent variants")
 # barely passes 60, the arms stay locked near 90 at the elbow, and the
 # body leaves the ground twice a cycle - so the whole figure bobs, low at
 # each midstance and high through each flight phase.
-RUN_DOTS = 36
+RUN_DOTS = 38
 D = math.radians
 
 HIP   = [D(x) for x in (30, 18, 2, -12, -5, 18, 38, 40)]
 KNEE  = [D(x) for x in (15, 40, 30, 25, 75, 105, 80, 35)]
 LEAN  = D(8)                        # trunk carried forward, as runners do
-ELBOW = D(95)                       # held bent through the whole cycle
+ELBOW_BACK, ELBOW_FWD = D(68), D(118)   # the elbow WORKS: it opens as the
+                                        # arm swings back and closes as it
+                                        # comes forward, which is what makes
+                                        # an arm read as jointed rather than
+                                        # as a rigid L pivoting at the shoulder
 
 THIGH, SHANK, FOOT = 30.0, 30.0, 9.0
 UPPER, FORE = 16.0, 14.0
@@ -447,8 +451,11 @@ def run_pose(c):
         chain(hx, hy, ((THIGH, th, 3), (SHANK, sh, 3)))
         ax, ay = pts[-1]
         pts.append((ax + FOOT * math.cos(sh), ay + FOOT * 0.35))   # the foot
-        sa = LEAN - 0.9 * curve(HIP, j + 0.5)        # arms counter the legs
-        chain(sx, sy, ((UPPER, sa, 2), (FORE, sa + ELBOW, 3)))
+        swing = curve(HIP, j + 0.5)                  # arms counter the legs
+        sa = LEAN - 0.9 * swing
+        t = min(1.0, max(0.0, (sa + 0.50) / 0.85))   # 0 = arm back, 1 = forward
+        elbow = ELBOW_BACK + (ELBOW_FWD - ELBOW_BACK) * t
+        chain(sx, sy, ((UPPER, sa, 3), (FORE, sa + elbow, 3)))
     return pts
 
 

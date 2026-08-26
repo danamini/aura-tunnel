@@ -32,7 +32,7 @@ ARTIFACTS = {
                                 # rotation - the wireframe renderer and
                                 # its vertex tables are gone entirely
     "build/minicube.bin": 1024,
-    "build/runner.bin": 1152,   # 8 poses x 36 joints x [x,y], full + half:
+    "build/runner.bin": 1216,   # 8 poses x 38 joints x [x,y], full + half:
                                 # a stride change here reads poses out of
                                 # phase and throws the companion off-screen
     "build/yiear.bin": 2400,

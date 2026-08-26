@@ -93,7 +93,7 @@ DBLTAB   EQU $B000              ; x -> x with every bit doubled
 BSGLY    EQU $B200              ; the current letter, 24 rows x 4 bytes
 BSTMP    EQU $B280              ; its half-way 16x8
 BANDTOP  EQU 72                 ; the letter band's top scanline
-RUN_DOTS EQU 36                 ; joints in the dot runner
+RUN_DOTS EQU 38                 ; joints in the dot runner
 STACK    EQU $FA00
 IM2TAB   EQU $FB00              ; 257 bytes of $FC
 IM2VEC   EQU $FCFC              ; RETI
@@ -2084,16 +2084,16 @@ FIGHTS:                         ; 32 steps x [px, pframe, ox, oframe]
 CBDAT:                          ; 32 poses of the hero cube, 32x32 each
         INCBIN "build/cubebig.bin"
 
-SKYREV:                         ; the sunset, top row to horizon.  Nine
-        db $00,$00,$00          ;   bands rather than four: BRIGHT doubles
-        db $08,$08              ;   every paper, so blue-magenta-red-yellow
-        db $48,$48              ;   gives twice the gradient steps for the
-        db $18,$18              ;   price of the same single attribute
-        db $58,$58              ;   write a row.  Ink stays white so the
-        db $10,$10              ;   runner's dots read against all of it
-        db $50,$50,$50,$50      ;   bright red carries four rows now: the
-        db $30,$30              ;   bright-yellow slab by the runner's legs
-        db $70,$70              ;   was four rows deep and read as a wall
+SKYREV:                         ; the sunset, top row to horizon - FULL
+        db $07,$07,$07          ;   attribute bytes, ink included, because
+        db $0F,$0F              ;   the runner's dots take the ink colour
+        db $4F,$4F              ;   of whatever cell they land in.  White
+        db $1F,$1F              ;   ink reads against every dark band...
+        db $5F,$5F
+        db $17,$17
+        db $57,$57,$57,$57      ;   ...but not against yellow, so the two
+        db $30,$30              ;   yellow bands at the horizon - exactly
+        db $70,$70              ;   where his legs are - take BLACK ink
         ASSERT $ <= $8000
 
         ORG SHADEP1             ; the warm shade tables died with the
@@ -2364,19 +2364,12 @@ RUNNER:
 .draw:
         ld sp,RDTOP
         ld a,(FRAMES)           ; the companion, half size and further
-        rrca                    ; back.  His cadence is slightly quicker
-        and 127                 ; than the runner's - one extra pose every
-        ld b,a                  ; sixteen frames - so the two drift right
-        ld a,(FRAMES)           ; through each other's phase instead of
-        rrca                    ; pounding along in lockstep
-        rrca
-        rrca
-        rrca
-        and 15
-        add a,b
-        add a,3
-        and 7
-        ld c,8                  ; the half-size half of the table
+        rrca                    ; back.  Four frames a pose against the
+        rrca                    ; runner's two, which is exactly the ratio
+        and 7                   ; of their ground speeds - so his legs keep
+        add a,3                 ; time with his own drift, and the two are
+        and 7                   ; never in step.  Mask AFTER the offset too:
+        ld c,8                  ; 7+3 indexes past the end of the table                  ; the half-size half of the table
         call RUNPOSE
         ld a,(FRAMES)           ; he runs the other way down the road,
         rrca                    ; so the two are never a matched pair
@@ -2387,6 +2380,8 @@ RUNNER:
         ld (RFX),a
         ld a,100                ; and his feet meet the same ground
         ld (RFY),a
+        xor a                   ; dark too: a colour would vanish into
+        ld (RFINK),a            ; the yellow bands the way white did
         ld hl,.two
         ld (RUNFIG.out+1),hl
         jp RUNFIG
@@ -2403,6 +2398,8 @@ RUNNER:
         ld (RFX),a
         ld a,36                 ; and his feet land on the horizon
         ld (RFY),a
+        xor a                   ; and the runner himself is a silhouette
+        ld (RFINK),a
         ld hl,.done
         ld (RUNFIG.out+1),hl
         jp RUNFIG
@@ -2426,14 +2423,19 @@ RUNPOSE:                        ; A = pose, C = table half -> IX = its dots
         ld l,a
         ld h,0
         add hl,hl
-        add hl,hl
+        add hl,hl               ; * 4
+        ld e,l
+        ld d,h
         add hl,hl               ; * 8
+        push de
         ld e,l
         ld d,h
         add hl,hl
         add hl,hl
         add hl,hl               ; * 64
-        add hl,de               ; * 72 = RUN_DOTS * 2: keep these two in
+        add hl,de               ; * 72
+        pop de
+        add hl,de               ; * 76 = RUN_DOTS * 2: keep these two in
         ld de,RUNDAT            ; step, or poses read a byte out of phase
         add hl,de
         push hl
@@ -2499,6 +2501,19 @@ RUNFIG:                         ; IX = pose, RFX/RFY = where.  Never
         or (hl)
         ld (hl),a
 .one:
+        ld a,h                  ; this dot's colour cell.  A bitmap address
+        rrca                    ; already carries it: attr = $5800 + the
+        rrca                    ; third * 256 + the same low byte, since L
+        rrca                    ; is exactly (char row << 5) | column.  The
+        and 3                   ; second scanline can only be in the same
+        add a,HIGH ATTRS        ; third, so H may be either and it still
+        ld h,a                  ; lands on the right cell
+        ld a,(hl)
+        and $F8                 ; keep the sky's paper, take our own ink
+        ld c,a
+        ld a,(RFINK)
+        or c
+        ld (hl),a
         inc ix
         inc ix
         djnz .dl
@@ -2515,9 +2530,7 @@ RUNSET:                         ; scene entry: the sunset, painted once
         ld a,HIGH SKYREV
         adc a,0
         ld d,a
-        ld a,(de)
-        and $78                 ; paper AND bright, with white ink so the
-        or 7                    ; runner's dots read against every band
+        ld a,(de)               ; paper, bright and ink all baked in
         ld e,a
         DUP 32
         ld (hl),e
@@ -2534,6 +2547,7 @@ RUNSET:                         ; scene entry: the sunset, painted once
 
 RFX:    db 0
 RFY:    db 0
+RFINK:  db 0
 RUNDAT:
         INCBIN "build/runner.bin"
 
