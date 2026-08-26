@@ -16,6 +16,14 @@ Exception: the Yie Ar Kung-Fu sprite artwork (assets/oolong-sheet.png and the
 build/yiear.bin data derived from it) is copyright Konami and is NOT covered
 by this licence; it is included for personal and educational use only.
 
+Music: the melody used by the 128K edition is "Korobeiniki", a Russian folk
+tune of the 1860s (melody traditional; lyrics after Nikolay Nekrasov, 1861).
+The melody is in the public domain and needs no licence. The three-voice
+arrangement in tools/gen_ay128.py -- the bass line, the percussion, and the
+per-voice volume envelopes -- is original to this project and is covered by
+the licence above. This demo is not affiliated with, and does not reference,
+any commercial game that has set the same folk melody.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE

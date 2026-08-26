@@ -22,7 +22,9 @@ PALETTE = [  # normal, then bright
 ]
 
 
-def zrcp(cmd, port=PORT):
+def zrcp(cmd, port=None):
+    port = PORT if port is None else port   # resolved per call, not at def
+
     s = socket.create_connection(("localhost", port), timeout=5)
     s.recv(4096)  # banner
     s.sendall((cmd + "\n").encode())
@@ -92,9 +94,12 @@ def write_png(path, px):
 
 
 def main():
+    global PORT
     out = sys.argv[1]
     args = sys.argv[2:]
-    if "--wait-scene" in args:
+    if "--port" in args:        # documented since day one, never actually
+        PORT = int(args[args.index("--port") + 1])   # parsed - every dump
+    if "--wait-scene" in args:  # silently went to whatever sits on 10777
         want = int(args[args.index("--wait-scene") + 1])
         addr = SCENE_ADDR
         if "--scene-addr" in args:

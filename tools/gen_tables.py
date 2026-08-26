@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""Table generator for AURA TUNNEL (48K ZX Spectrum demo).
+"""Table generator for AURA TUNNEL (48K/128K ZX Spectrum demo).
 
 Everything expensive is baked here at build time, the way real demos
 precalc; the Z80 only copies, pops and looks up.  Outputs (build/):
 
-  maps.bin      tunnel maps: 3 geometries (circle/square/star) x 2 bob
-                phases x 21 attr rows x 32 cols x [Ptop, Pbot].  A map
-                byte is bit7 half | angle<<4 | depth.
-  shadep/i0/1   colour LUT sources, cool and warm palettes: 2KB each,
-                indexed (wedge<<8 | depth<<4 | ring).
-  etab.bin      the LUT builder's next-texture-coordinate table.
   rainbow.bin   cyclic ink strip under the snake scroller.
-  sintab.bin    sine 0..16: snake wave, letter bounce, surge speeds.
+  sintab.bin    sine 0..16: snake wave, scroller wave, surge speeds.
   snake.asm     generated single-pass blit code, one routine per offset.
-  mustab.bin    8-bar beeper score: [wait_lo, wait_hi, halfperiods, 0]
-                per step; wait loop costs 26T/iter + 35T.
-  stickman.bin  8-pose articulated walk cycle, 16x40 chunky.
-  ministick.bin the same poses 2x2-downsampled for the background walker.
-  gpat.bin      parallax ground dash strips (fast + slow bands).
+  gpat.bin      cyclic dash strips - the runner's floor and the train's
+                scenery both ride these.
   stars.bin     48 star records [xfrac, xint, y, attr], 3 speed layers.
   yiear.bin     6 Yie Ar Kung-Fu frames + mirrors, 40x40 1-bit
                 (sliced from assets/oolong-sheet.png when Pillow is present).
-  cube.bin      128 perspective-projected rotation frames, 8 vertices.
-  minicube.bin  32 frames of the same cube rasterized 16x16.
-  cubeattr.bin  rainbow ring attrs behind the wireframe.
+  cubebig.bin   32 poses of a solid dither-shaded cube, 32x32.
+  minicube.bin  the same, 16x16, for the corner companions.
+  cubeattr.bin  rainbow ring attrs behind the cubes.
   g3d0/1/2.bin  hidden-line surface plots (ripple/eggbox/saddle) as
                 visible-point rows [count, sx0, py|0xFF...].
+  dots.bin      dot-flow tunnel trajectories, 3 geometries.
+  roto.bin      roto grid: 64 angles x 8 zooms x [A, B, DX, DY].
+  bitmask.bin   one page of $80>>(x&7), for single-pixel plots.
+  dbltab.bin    x with every bit doubled: the scroller's font scaler.
+  bigscr.asm    the scroller's 8 baked column-descent variants.
+  runner.bin    8 poses x 36 joints of the dot runner, baked full size
+                and half size, off real running gait kinematics.
+
+The 128K edition's AY score is baked separately by tools/gen_ay128.py.
 """
 import math
 import os
@@ -36,8 +36,22 @@ out = sys.argv[1] if len(sys.argv) > 1 else "build"
 os.makedirs(out, exist_ok=True)
 
 COLS, ATTR_ROWS = 32, 21
-MAPS_PER_SCENE = 2  # bob phases; the asm ping-pongs 0,1,0,1
-K = 230.0  # perspective constant: smaller = tighter vanishing point
+
+
+CFACE = [(0,1,3,2), (4,6,7,5), (0,4,5,1), (2,3,7,6), (0,2,6,4), (1,5,7,3)]
+FNORM = [(0,0,-1), (0,0,1), (0,-1,0), (0,1,0), (-1,0,0), (1,0,0)]
+LIGHT = (-0.42, -0.57, -0.71)           # the sun, over your left shoulder
+BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+
+
+def shade_of(nx, ny, nz, ca, sa, cb, sb):
+    """A rotated face normal -> 0 if it points away, else dither level 1-7."""
+    x, z = nx * ca + nz * sa, -nx * sa + nz * ca
+    y, z = ny * cb - z * sb, ny * sb + z * cb
+    if z > -0.02:
+        return 0
+    d = x * LIGHT[0] + y * LIGHT[1] + z * LIGHT[2]
+    return 1 + min(6, max(0, int((d + 1.0) * 3.5)))
 
 
 def write(name, data):
@@ -45,74 +59,6 @@ def write(name, data):
         f.write(bytes(data))
     print(f"  {name}: {len(data)} bytes")
 
-
-# ---------------------------------------------------------------- tunnel maps
-# 3 scene geometries x 4 maps with the vanishing point bobbing in a circle:
-# cheap "camera wobble" -- the per-frame code just repoints SP at a map.
-def r_circle(x, y):
-    return math.hypot(x, y)
-
-
-def r_square(x, y):
-    return max(abs(x) * 0.85, abs(y))
-
-
-def r_star(x, y):
-    return math.hypot(x, y) / (1.0 + 0.30 * math.cos(4 * math.atan2(y, x)))
-
-
-SCENES = [r_circle, r_square, r_star]
-
-maps = bytearray()
-for radius in SCENES:
-    for k in range(MAPS_PER_SCENE):
-        ph = 2 * math.pi * k / MAPS_PER_SCENE
-        cx = 128.0 + 18.0 * math.cos(ph)   # real-pixel centre
-        cy = 84.0 + 12.0 * math.sin(ph)
-        for row in range(ATTR_ROWS):
-            for col in range(COLS):
-                for half in (0, 1):        # 0 = top half-block, 1 = bottom
-                    x = (col + 0.5) * 8.0 - cx
-                    y = (row * 2 + half + 0.5) * 4.0 - cy
-                    r = radius(x, y)
-                    d = min(15, int(K / max(r, 1.0)))
-                    a = int(((math.atan2(y, x) / (2 * math.pi)) % 1.0) * 8) & 7
-                    maps.append((half << 7) | (a << 4) | d)
-assert len(maps) == len(SCENES) * MAPS_PER_SCENE * ATTR_ROWS * 64 == 8064
-write("maps.bin", maps)
-
-# --------------------------------------------------------------- shade tables
-# Index: a2 = rotated wedge, d = spatial depth (0 outer/near .. 15 centre/far),
-# d2 = scrolled texture ring.  Rings alternate colour pairs chosen by spatial
-# depth band (so the tunnel darkens toward the vanishing point), a white
-# pulse ring flies outward once per texture cycle, and wedge 0 is one band
-# brighter -- a radar sweep that makes the rotation readable.
-# Two palettes; the demo alternates them on every scene change.
-PALETTES = [
-    [(7, 5), (5, 4), (4, 1), (1, 0)],  # cool: white/cyan/green/blue/black
-    [(7, 6), (6, 2), (2, 3), (3, 0)],  # warm: white/yellow/red/magenta/black
-]
-
-for p, bands in enumerate(PALETTES):
-    shp, shi = bytearray(2048), bytearray(2048)
-    for a2 in range(8):
-        for d in range(16):
-            for d2 in range(16):
-                band = d >> 2
-                b = max(0, band - (1 if a2 == 0 else 0))
-                if d2 == 0:
-                    c = 7  # pulse ring, all the way to the vanishing point
-                else:
-                    c = bands[b][(d2 >> 1) & 1]  # two-step rings: calm
-                i = (a2 << 8) | (d << 4) | d2
-                shp[i] = (c << 3) | 0x40
-                shi[i] = c
-    write(f"shadep{p}.bin", shp)
-    write(f"shadei{p}.bin", shi)
-
-# --------------------------------------------------- LUT-builder step table
-write("etab.bin", bytes(((e + 0x10) & 0xF0) | ((e + 1) & 0x0F)
-                        for e in range(256)))
 
 # ------------------------------------------------------- scroller attr strip
 ramp = [1, 1, 1, 5, 5, 4, 4, 7, 7, 7, 7, 4, 4, 5, 5, 1]  # blue-cyan-green-white
@@ -160,98 +106,6 @@ with open(os.path.join(out, "snake.asm"), "w") as f:
     f.write(snake)
 print("  snake.asm: %d variants" % len(lines_of))
 
-# ------------------------------------------------------------ beeper music
-# 32-step pattern, one step per 8 frames (0.16s; a full loop = one scene
-# slot).  Each frame the demo plays one ~10.5k T-state burst of the step's
-# note in its spare time.  Entry: [halfperiod_lo, halfperiod_hi, count, 0]
-# where the wait loop costs 26T/iter + 35T per half-period.
-NOTE_HZ = {"A3": 220, "E4": 330, "F4": 349, "G4": 392, "A4": 440,
-           "B4": 494, "C5": 523, "D5": 587, "E5": 659, "F5": 698,
-           "G5": 784, "A5": 880}
-PATTERN = [  # Korobeiniki - the 19th-century folk melody, PD
-    "E5","E5","B4","C5","D5","D5","C5","B4",   # bar 1
-    "A4","A4","A4","C5","E5","E5","D5","C5",
-    "B4","B4","B4","C5","D5","D5","E5","E5",   # bar 2
-    "C5","C5","A4","A4","A4","A4",None,None,
-    "D5","D5","D5","F5","A5","A5","G5","F5",   # bar 3
-    "E5","E5","E5","C5","E5","E5","D5","C5",
-    "B4","B4","B4","C5","D5","D5","E5","E5",   # bar 4
-    "C5","C5","A4","A4","A4","A4",None,None,
-    "E5","E5","B4","C5","D5","D5","C5","B4",   # bars 5-8: the theme
-    "A4","A4","A4","C5","E5","E5","D5","C5",   # again, rounding off
-    "B4","B4","B4","C5","D5","D5","E5","E5",   # with a firmer cadence
-    "C5","C5","A4","A4","A4","A4",None,None,
-    "D5","D5","D5","F5","A5","A5","G5","F5",
-    "E5","E5","E5","C5","E5","E5","D5","C5",
-    "B4","B4","C5","C5","D5","D5","E5","E5",
-    "C5","C5","A4","A4","A4","A4","A4","A4"]
-BURST_T = 13000
-
-mus = bytearray()
-for step in PATTERN:
-    if step is None:
-        mus += bytes((0, 0, 0, 0))
-        continue
-    half_t = 3_500_000 / (2 * NOTE_HZ[step])
-    w = max(1, round((half_t - 35) / 26))
-    h = max(2, int(BURST_T // (26 * w + 35)))  # bass floor: 1 full cycle
-    mus += bytes((w & 255, w >> 8, min(255, h), 0))
-assert len(mus) == 512
-write("mustab.bin", mus)
-
-# ------------------------------------------------------------- stick man
-# 8-pose walk cycle on a 16x40 chunky-pixel grid (= 128x160 real pixels).
-# Per pose, per attr row (2 chunky rows): [top cols8-15, top cols0-7,
-# bot cols8-15, bot cols0-7] - the order the renderer's 16-bit shift
-# register wants.  8 poses x 20 rows x 4 = 640 bytes.
-SW, SH = 16, 40
-
-def stick_pose(ph):
-    g = [[0] * SW for _ in range(SH)]
-
-    def px(x, y):
-        xi, yi = int(round(x)), int(round(y))
-        if 0 <= xi < SW and 0 <= yi < SH:
-            g[yi][xi] = 1
-
-    def line(x0, y0, x1, y1):
-        n = max(1, int(max(abs(x1 - x0), abs(y1 - y0))) * 3)
-        for i in range(n + 1):
-            t = i / n
-            px(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
-
-    def limb(x0, y0, l1, a1, l2, a2):
-        # two segments; angles from straight down, +x = walking direction
-        mx, my = x0 + l1 * math.sin(a1), y0 + l1 * math.cos(a1)
-        line(x0, y0, mx, my)
-        line(mx, my, mx + l2 * math.sin(a2), my + l2 * math.cos(a2))
-
-    for yy in range(9):                    # head, filled
-        for xx in range(4, 13):
-            if (xx - 8) ** 2 + (yy - 4) ** 2 <= 6.5:
-                g[yy][xx] = 1
-    line(8, 8, 8, 21)                      # torso
-    for pp in (ph, ph + math.pi):
-        u = 0.45 * math.sin(pp + math.pi)  # arms swing opposite the legs,
-        limb(8, 11, 4, u, 4, u + 0.8)      # elbows bent forward
-        t = 0.35 * math.sin(pp)            # legs: knee flexes on the swing
-        k = 0.9 * max(0.0, math.sin(pp + 2.3))
-        limb(8, 21, 9, t, 9, t - k)
-    return g
-
-def bits(row, lo, hi):
-    return sum(row[c] << (7 - i) for i, c in enumerate(range(lo, hi)))
-
-stick = bytearray()
-for pose in range(8):
-    g = stick_pose(2 * math.pi * pose / 8)
-    for r in range(20):
-        for y in (2 * r, 2 * r + 1):
-            stick.append(bits(g[y], 8, 16))
-            stick.append(bits(g[y], 0, 8))
-assert len(stick) == 640
-write("stickman.bin", stick)
-
 # ------------------------------------------------------- parallax ground
 # Two 64-byte cyclic 512px dash strips (each doubled so a 32-byte window
 # never wraps): long speed-lines for the fast band, sparse dots for the
@@ -285,20 +139,6 @@ for layer in LAYER_COLOURS:
                         8 + rng.randrange(152), rng.choice(layer)))
 assert len(stars) == 192
 write("stars.bin", stars)
-
-# ------------------------------------------------- mini background walker
-# The stick man's distant companion: his poses 2x2 OR-downsampled to an
-# 8x20 chunky grid.  Per attr row: [top byte, bottom byte] x 10 x 8 poses.
-mini = bytearray()
-for pose in range(8):
-    g = stick_pose(2 * math.pi * pose / 8)
-    m = [[1 if any(g[2*y+dy][2*x+dx] for dy in (0,1) for dx in (0,1)) else 0
-          for x in range(8)] for y in range(20)]
-    for r in range(10):
-        for y in (2 * r, 2 * r + 1):
-            mini.append(sum(m[y][b] << (7 - b) for b in range(8)))
-assert len(mini) == 160
-write("ministick.bin", mini)
 
 # ------------------------------------------------------- kung-fu fighters
 # Six frames of Oolong ripped from the ZX Spectrum Yie Ar Kung-Fu sheet
@@ -338,30 +178,13 @@ except ImportError:
 # perspective-projected in here so the Z80 never multiplies.  Per frame:
 # 8 vertices x [sx, sy] = 16 bytes.  Plus a radial rainbow attr backdrop
 # the spinning wireframe picks its colours from.
-CUBE_HALF, CUBE_DIST, CUBE_SCALE = 15, 140, 135
-cube = bytearray()
-for k in range(128):
-    a = 2 * math.pi * k / 128
-    b = 2 * math.pi * k / 64 + 0.5
-    ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
-    for v in range(8):
-        x = CUBE_HALF * (1 if v & 1 else -1)
-        y = CUBE_HALF * (1 if v & 2 else -1)
-        z = CUBE_HALF * (1 if v & 4 else -1)
-        x, z = x * ca + z * sa, -x * sa + z * ca
-        y, z = y * cb - z * sb, y * sb + z * cb
-        px = round(128 + x * CUBE_SCALE / (z + CUBE_DIST))
-        py = round(96 + y * CUBE_SCALE / (z + CUBE_DIST))
-        # must stay inside the 64x64 off-screen raster buffer
-        assert 96 <= px <= 159 and 64 <= py <= 127, (px, py)
-        cube += bytes((px, py))
-assert len(cube) == 2048
-write("cube.bin", cube)
+CUBE_HALF, CUBE_DIST, CUBE_SCALE = 15, 140, 78
 
-# Companion cubes: the same geometry rasterized small at build time -
-# 64 frames of 16x16 wireframe sprites (2 bytes x 16 rows), so a spinning
-# background cube costs a 32-byte blit instead of twelve Bresenham lines.
-CEDGE = [(0,1),(2,3),(4,5),(6,7),(0,2),(1,3),(4,6),(5,7),(0,4),(1,5),(2,6),(3,7)]
+
+# Companion cubes: the same geometry rasterized small at build time, and
+# now SOLID - each visible face scan-filled through the same Bayer matrix
+# the big cube's Z80 filler uses, so a background cube costs a 32-byte
+# blit and still matches the shading of the one being filled live.
 mini = bytearray()
 for k in range(32):
     a = 2 * math.pi * k / 32
@@ -376,15 +199,25 @@ for k in range(32):
         y, z = y * cb - z * sb, y * sb + z * cb
         pts.append((7.5 + x * 92 / (z + 140), 7.5 + y * 92 / (z + 140)))
     g = [[0] * 16 for _ in range(16)]
-    for i, j in CEDGE:
-        x0, y0 = pts[i]
-        x1, y1 = pts[j]
-        n = max(1, int(max(abs(x1 - x0), abs(y1 - y0))) * 3)
-        for t in range(n + 1):
-            xx = int(round(x0 + (x1 - x0) * t / n))
-            yy = int(round(y0 + (y1 - y0) * t / n))
-            if 0 <= xx < 16 and 0 <= yy < 16:
-                g[yy][xx] = 1
+    for f, (nx, ny, nz) in enumerate(FNORM):
+        lev = shade_of(nx, ny, nz, ca, sa, cb, sb)
+        if not lev:
+            continue                        # facing away
+        quad = [pts[i] for i in CFACE[f]]
+        ys = [q[1] for q in quad]
+        for sy in range(max(0, int(min(ys))), min(16, int(max(ys)) + 1)):
+            xs = []
+            for i in range(4):              # where the scanline crosses
+                x0, y0 = quad[i]            #   each edge of the face
+                x1, y1 = quad[(i + 1) & 3]
+                if (y0 <= sy < y1) or (y1 <= sy < y0):
+                    xs.append(x0 + (x1 - x0) * (sy - y0) / (y1 - y0))
+            if len(xs) < 2:
+                continue
+            for sx in range(max(0, int(round(min(xs)))),
+                            min(16, int(round(max(xs))) + 1)):
+                if BAYER[sy & 3][sx & 3] < lev * 2:
+                    g[sy][sx] = 1
     for row in g:
         mini.append(sum(row[i] << (7 - i) for i in range(8)))
         mini.append(sum(row[8 + i] << (7 - i) for i in range(8)))
@@ -467,32 +300,232 @@ dots += dot_geo(lambda a: 0.82 * (1.0 + 0.30 * math.cos(4 * a)))  # star
 assert len(dots) == 2304
 write("dots.bin", dots)
 
-# --------------------------------------------- giant-letter wave columns
-# One routine per vertical offset 0..13: paints a single attr COLUMN of
-# the big-type scene (21 rows, stride 32, page steps baked at rows 7/15):
-# backdrop above, the 8 letter rows from BBUF, backdrop below.  Letters
-# sample the wave by their position in the text, so each character bobs
-# whole - no tearing at screen-quarter boundaries.
-# Entry: HL = ATTRS+col, IX = BBUF+col+100 (bias keeps displacements
-# signed), E = backdrop colour.
-bw = []
-for K in range(14):
-    src = [f"BW{K}:"]
-    for r in range(21):
-        if K <= r < K + 8:
-            src.append(f"        ld a,(ix{(r-K)*32-100:+d})")
-            src.append("        ld (hl),a")
-        else:
-            src.append("        ld (hl),e")
-        if r in (7, 15):
-            src.append("        inc h")
-        if r < 20:
+# --------------------------------------------------------- roto grid
+# The top-down rotating plane, one table driving both its layers: 64
+# angles x 8 zoom levels x [A, B, DX, DY].  A and B (8.8 signed) are the
+# attribute rotozoom's per-column texel steps; DX and DY (9.7 signed,
+# so the accumulator's integer part spans 0..511 and a point that leaves
+# the screen is caught by one carry) step the hi-res dot lattice.  Dot
+# spacing is the grid pitch itself, so the dots land on the tiles'
+# corners however the plane turns.
+ROTA, ROTZ = 64, 8
+
+def s16(v):
+    v = int(round(v)) & 0xFFFF
+    return bytes((v & 255, v >> 8))
+
+roto = bytearray()
+for zi in range(ROTZ):
+    S = 64.0 + zi * 4.0                 # grid pitch / dot spacing, pixels
+    z = 128.0 / S                       # texels per attribute cell
+    for ai in range(ROTA):
+        th = 2 * math.pi * ai / ROTA
+        roto += s16(math.cos(th) * z * 256)     # A:  u step per column
+        roto += s16(math.sin(th) * z * 256)     # B:  v step per column (negated)
+        roto += s16(math.cos(th) * S * 128)     # DX: lattice step per i
+        roto += s16(math.sin(th) * S * 128)     # DY
+assert len(roto) == ROTA * ROTZ * 8 == 4096
+write("roto.bin", roto)
+
+# One page of pixel masks, so a plot can fetch $80>>(x&7) with a single
+# ld a,(de) instead of an indexed add.
+write("bitmask.bin", bytes(0x80 >> (i & 7) for i in range(256)))
+
+# ------------------------------------------------- hi-res sine scroller
+# The big scroller, rebuilt in pixels.  Letters are the ROM font scaled
+# x4 into a 32x32 bitmap (two passes of a bit-doubling table), fed one
+# PIXEL a frame into a 32-row buffer, then painted column by column with
+# every column at its own height off a travelling sine.  Nothing here
+# touches an attribute, so nothing here can be blocky in the old way.
+#
+# DBLTAB[x] is x with every bit doubled - 8 pixels in, 16 out.
+dbl = bytearray()
+for x in range(256):
+    v = 0
+    for b in range(8):
+        if x & (1 << b):
+            v |= 3 << (2 * b)
+    dbl += bytes((v & 255, v >> 8))
+assert len(dbl) == 512
+write("dbltab.bin", dbl)
+
+# One descent routine per start-scanline phase: 34 writes down a single
+# screen column - a blank guard row, the 32 buffer rows, another guard -
+# with every scanline step, third crossing and buffer page break baked in
+# rather than tested.  Entry: HL = buffer column, DE = screen address of
+# the guard row above the letter.
+sd = []
+ROWS = 24
+for P in range(8):
+    src = [f"SD{P}:", "        xor a", "        ld (de),a"]
+    for r in range(ROWS + 2):
+        y = P + r
+        if r:                                   # not the top guard row
+            src.append("        ld a,(hl)" if r <= ROWS else "        xor a")
+            src.append("        ld (de),a")
+        if r == ROWS + 1:
+            break
+        if 1 <= r <= ROWS - 1:                  # walk down the buffer column
             src += ["        ld a,l", "        add a,32", "        ld l,a"]
+            if r % 8 == 0:
+                src.append("        inc h")
+        if y % 8 == 7:                          # off the end of a char row
+            src += ["        ld a,d", "        sub 7", "        ld d,a",
+                    "        ld a,e", "        add a,32", "        ld e,a",
+                    f"        jr nc,.n{r}", "        ld a,d",
+                    "        add a,8", "        ld d,a", f".n{r}:"]
+        else:
+            src.append("        inc d")
     src.append("        ret")
-    bw.append("\n".join(src))
-out_bw = "\n".join(bw) + "\nBWJ:\n        dw " +     ", ".join(f"BW{K}" for K in range(14)) + "\n"
-with open(os.path.join(out, "bigwave.asm"), "w") as f:
-    f.write(out_bw)
-print("  bigwave.asm: 14 variants")
+    sd.append("\n".join(src))
+out_sd = "\n".join(sd) + "\nSDJ:\n        dw " + ", ".join(f"SD{P}" for P in range(8)) + "\n"
+with open(os.path.join(out, "bigscr.asm"), "w") as f:
+    f.write(out_sd)
+print(f"  bigscr.asm: 8 descent variants")
+
+# ------------------------------------------------------------ dot runner
+# A RUNNING gait, not the old walk.  Eight keyframes of the cycle, one
+# per pose, taken from the standard sagittal-plane figures for distance
+# running (right footstrike at 0%):
+#
+#   %cycle    0    12.5   25    37.5   50    62.5   75    87.5
+#   hip     +30    +18    +2    -12    -5    +18   +38    +40
+#   knee    +15    +40   +30    +25   +75   +105   +80    +35
+#
+# The signature of a run rather than a walk is the knee: it folds to
+# ~105 degrees through mid-swing (heel toward the backside) where a walk
+# barely passes 60, the arms stay locked near 90 at the elbow, and the
+# body leaves the ground twice a cycle - so the whole figure bobs, low at
+# each midstance and high through each flight phase.
+RUN_DOTS = 36
+D = math.radians
+
+HIP   = [D(x) for x in (30, 18, 2, -12, -5, 18, 38, 40)]
+KNEE  = [D(x) for x in (15, 40, 30, 25, 75, 105, 80, 35)]
+LEAN  = D(8)                        # trunk carried forward, as runners do
+ELBOW = D(95)                       # held bent through the whole cycle
+
+THIGH, SHANK, FOOT = 30.0, 30.0, 9.0
+UPPER, FORE = 16.0, 14.0
+HIPY, SHOY = 70.0, 28.0
+
+
+def curve(tab, c):                  # sample a keyframe curve at cycle c
+    f = (c % 1.0) * 8.0
+    i = int(f)
+    return tab[i] + (tab[(i + 1) & 7] - tab[i]) * (f - i)
+
+
+def run_pose(c):
+    pts = []
+    # lowest at each midstance, highest through each flight phase
+    dy = -4.0 * math.cos(4 * math.pi * (c - 0.125))
+    hx, hy = 40.0, HIPY + dy
+    sx, sy = hx + math.sin(LEAN) * (HIPY - SHOY), SHOY + dy
+
+    def chain(x0, y0, segs):
+        x, y = x0, y0
+        for length, ang, n in segs:
+            nx, ny = x + length * math.sin(ang), y + length * math.cos(ang)
+            for i in range(1, n + 1):
+                pts.append((x + (nx - x) * i / n, y + (ny - y) * i / n))
+            x, y = nx, ny
+        return x, y
+
+    hd = 15.0 + dy                  # the head, an open ring
+    for j in range(6):
+        a = 2 * math.pi * j / 6
+        pts.append((sx + math.sin(LEAN) * 13 + 9 * math.sin(a), hd + 9 * math.cos(a)))
+    for i in range(6):              # the spine, shoulder down to hip
+        t = i / 5.0
+        pts.append((sx + (hx - sx) * t, sy + (hy - sy) * t))
+
+    for side in (0.0, 0.5):         # the far limbs are half a cycle behind
+        j = c + side
+        th = curve(HIP, j)                           # thigh, from vertical
+        sh = th - curve(KNEE, j)                     # shank, knee folding back
+        chain(hx, hy, ((THIGH, th, 3), (SHANK, sh, 3)))
+        ax, ay = pts[-1]
+        pts.append((ax + FOOT * math.cos(sh), ay + FOOT * 0.35))   # the foot
+        sa = LEAN - 0.9 * curve(HIP, j + 0.5)        # arms counter the legs
+        chain(sx, sy, ((UPPER, sa, 2), (FORE, sa + ELBOW, 3)))
+    return pts
+
+
+run = bytearray()
+for half in (1, 2):                 # full size, then the distant companion
+    for pose in range(8):
+        # the silhouette repeats every step, so eight poses cover half a
+        # cycle: eight DISTINCT frames instead of four shown twice
+        pts = run_pose(pose / 16.0)
+        assert len(pts) == RUN_DOTS, len(pts)
+        xs = [p[0] for p in pts]
+        for x, y in pts:
+            xi, yi = int(round(x / half)), int(round(y / half))
+            assert 0 <= xi <= 79 and 0 <= yi <= 140, (xi, yi, pose)
+            run += bytes((xi, yi))
+assert len(run) == 2 * 8 * RUN_DOTS * 2
+write("runner.bin", run)
+
+# --------------------------------------------------- Driller-style cubes
+# Freescape drew solid faces filled with ordered dither, which is how you
+# get shading out of one bit per pixel.  Baked per rotation frame: the
+# six faces' shade levels, 0 where the face points away from us and 1-7
+# by how squarely it faces the light.  The Z80 fills the visible ones as
+# convex quads, so one 2KB vertex table drives a cube at any size.
+
+
+# Eight levels of a 4x4 ordered dither, as four byte-wide rows each.  The
+# byte repeats every 4 pixels so a span can be filled with whole bytes.
+
+
+# ------------------------------------------------- baked Driller cubes
+# The live scanline filler was correct but cost ~90k T-states a frame -
+# more than the 69,888 there are.  So the cubes get baked like everything
+# else here: each visible face scan-filled through the Bayer matrix at
+# build time, leaving the Z80 a flat sprite blit that also self-erases.
+def bake_cube(size, frames, radius):
+    out = bytearray()
+    wb = (size + 7) // 8
+    for k in range(frames):
+        a = 2 * math.pi * k / frames
+        b = 2 * math.pi * k / (frames // 2) + 0.5
+        ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
+        c = (size - 1) / 2.0
+        pts = []
+        for v in range(8):
+            x = radius * (1 if v & 1 else -1)
+            y = radius * (1 if v & 2 else -1)
+            z = radius * (1 if v & 4 else -1)
+            x, z = x * ca + z * sa, -x * sa + z * ca
+            y, z = y * cb - z * sb, y * sb + z * cb
+            pts.append((c + x * 92 / (z + 140), c + y * 92 / (z + 140)))
+        g = [[0] * (wb * 8) for _ in range(size)]
+        for f, (nx, ny, nz) in enumerate(FNORM):
+            lev = shade_of(nx, ny, nz, ca, sa, cb, sb)
+            if not lev:
+                continue
+            quad = [pts[i] for i in CFACE[f]]
+            ys = [q[1] for q in quad]
+            for sy in range(max(0, int(min(ys))), min(size, int(max(ys)) + 1)):
+                xs = []
+                for i in range(4):
+                    x0, y0 = quad[i]
+                    x1, y1 = quad[(i + 1) & 3]
+                    if (y0 <= sy < y1) or (y1 <= sy < y0):
+                        xs.append(x0 + (x1 - x0) * (sy - y0) / (y1 - y0))
+                if len(xs) < 2:
+                    continue
+                for sx in range(max(0, int(round(min(xs)))),
+                                min(size, int(round(max(xs))) + 1)):
+                    if BAYER[sy & 3][sx & 3] < lev * 2:
+                        g[sy][sx] = 1
+        for row in g:
+            for byte in range(wb):
+                out.append(sum(row[byte * 8 + i] << (7 - i) for i in range(8)))
+    assert len(out) == frames * size * wb
+    return out
+
+write("cubebig.bin", bake_cube(32, 32, 14.5))
 
 print("tables OK")
