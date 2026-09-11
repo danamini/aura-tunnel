@@ -20,7 +20,7 @@ build. The separate Spectrum Aura browser visualiser is outside this workstream.
 - Clock 128K AY music from IM2 and expand the arrangement to four sections.
   Make the meter strip opaque and reserve its rows through transitions.
 - Correct the briefing cursor mask and graph caption overlap.
-- Replace the staged BASIC speed claim with actual ROM execution. Show its
+- Run the graph program in the ROM BASIC interpreter. Show its
   generated source listing, stop after 750 interrupts (15 seconds), restore
   borrowed memory, and continue to precalculated Z80 plots. AY continues in 128K.
 - Preserve the fight scene's rendering and sequence placement, as requested.

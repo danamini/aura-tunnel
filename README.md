@@ -9,6 +9,20 @@ calculation in the Spectrum ROM, with its source visible on screen.
 [Spectrum Aura](https://github.com/danamini/spectrum-aura) is the separate browser
 visualiser that inspired this project.
 
+## Quick start — play in your browser
+
+No installation or build needed.
+
+1. Download the **[128K snapshot with music](https://github.com/danamini/aura-tunnel/releases/latest/download/aura-tunnel-128.sna)**
+   or the **[silent 48K snapshot](https://github.com/danamini/aura-tunnel/releases/latest/download/aura-tunnel.sna)**.
+2. Open **[JSSpeccy, the browser Spectrum emulator](https://jsspeccy.zxdemo.org/)**.
+3. Use the emulator's file-open control to select the downloaded `.sna` file.
+4. Press **Play** if paused. The snapshot starts the demo directly; no tape-loading
+   command is needed.
+
+These links download the latest published release. It currently predates the
+source changes described below; refreshed release builds are still pending.
+
 ## Current build
 
 - The big sine scroller runs at about 50 FPS, one pixel per frame, for about
@@ -18,8 +32,7 @@ visualiser that inspired this project.
 - The white central cube and four companions move independently. The central
   cube's phase and erase alignment are covered by regression checks.
 - The graph scene shows a **15-second real BASIC preview**, then switches to
-  labelled, precalculated Z80 plots. The old “25 BASIC points per second” claim
-  has been removed.
+  labelled, precalculated Z80 plots.
 - The 128K edition adds a four-section AY arrangement and level meters. Music
   is interrupt-driven and continues during BASIC.
 
