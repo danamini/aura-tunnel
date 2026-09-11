@@ -9,6 +9,10 @@ calculation in the Spectrum ROM, with its source visible on screen.
 [Spectrum Aura](https://github.com/danamini/spectrum-aura) is the separate browser
 visualiser that inspired this project.
 
+This work was done to see what could be done with AI on legacy hardware, with a
+view to learning about the Z80 and the ZX Spectrum. Things I could only of dreamed of 
+doing back in 1983... 
+
 ## Quick start — play in your browser
 
 No installation or build needed.
