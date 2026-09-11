@@ -24,6 +24,15 @@ per-voice volume envelopes -- is original to this project and is covered by
 the licence above. This demo is not affiliated with, and does not reference,
 any commercial game that has set the same folk melody.
 
+Motion capture: the runner's source joints are CMU Graphics Lab clip 09_01,
+converted to BVH by Bruce Hahne. See assets/mocap/SOURCE.md and READMEFIRST.txt
+for provenance, unrestricted reuse terms and the requested acknowledgment.
+The database was created with funding from NSF EIA-0196217.
+
+The current music also includes the public-domain melody Ode to Joy by
+Beethoven and two original melodies, Neon Drive and Night Flight. Their
+arrangements and the original melodies are covered by the project licence.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE

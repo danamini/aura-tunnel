@@ -5,3 +5,5 @@ shot.png
 __pycache__/
 .tmp/
 .vscode/
+
+.venv/

@@ -32,9 +32,8 @@ ARTIFACTS = {
                                 # rotation - the wireframe renderer and
                                 # its vertex tables are gone entirely
     "build/minicube.bin": 1024,
-    "build/runner.bin": 1216,   # 8 poses x 38 joints x [x,y], full + half:
-                                # a stride change here reads poses out of
-                                # phase and throws the companion off-screen
+    "build/runner.bin": 1536,   # 12 poses x 64 points x 2 coordinates
+    "build/runner-small.bin": 448,  # 8 poses x 28 points x 2 coordinates
     "build/yiear.bin": 2400,
     "build/stars.bin": 192,
 }
@@ -44,7 +43,7 @@ ARTIFACTS = {
 ARTIFACTS_128 = {
     "build/aura-tunnel-128.sna": 131103,   # 128K snapshot: header + 8 banks
     "build/aura-tunnel-128.tap": None,
-    "build/aymus.bin": 4367,               # the baked AY register stream
+    "build/aymus.bin": 10997,               # the baked AY register stream
 }
 
 
@@ -94,11 +93,7 @@ def seqlen():
     dip.  So take the count from the source rather than hardcoding it - the
     playlist grows whenever a scene is given a longer slot.
     """
-    m = re.search(r"^SEQLEN\s+EQU\s+(\d+)", open("src/main.asm").read(),
-                  re.MULTILINE)
-    if not m:
-        fail("could not read SEQLEN from src/main.asm")
-    return int(m.group(1))
+    return sym(r"SEQEND:") - sym(r"SEQ:    db")
 
 
 def check_listing_matches_memory():

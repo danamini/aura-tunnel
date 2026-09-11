@@ -90,7 +90,8 @@ def write_png(path, px):
            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
            + chunk(b"IDAT", zlib.compress(raw, 6))
            + chunk(b"IEND", b""))
-    open(path, "wb").write(png)
+    with open(path, "wb") as output:
+        output.write(png)
 
 
 def main():

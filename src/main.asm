@@ -1,17 +1,11 @@
 ; ----------------------------------------------------------------------------
-; AURA TUNNEL - a 48K ZX Spectrum demo
+; AURA TUNNEL - 48K and 128K ZX Spectrum demo
 ;
-; Fifteen playlist slots, ten scenes, one philosophy: every expensive
-; computation is paid for at build time (tools/gen_tables.py bakes
-; trajectories, projections, dither-shaded sprites, gait poses and
-; generated Z80); the Z80 itself only ever copies, pops and looks things
-; up.  Every SCENE holds 50 fps, single-buffered, racing the beam.  The
-; sliding transition is the one deliberate exception - see SLIDER.
-;
-; Assembled with -DTARGET128 it also builds the 128K edition, which adds
-; AY music and a VU console (src/ay128.asm, docs/128k-integration.md).
-; Every hook for it is inside IFDEF TARGET128; the 48K binary is
-; byte-identical with or without them present.
+; Most scenes use baked trajectories, projections, shaded sprites and
+; generated drawing routines. The graph interlude executes real ROM BASIC
+; for a bounded preview with its source listing visible.
+; Animated scenes target 50 fps except the complete-pose roto at 25 fps.
+; The 128K edition adds interrupt-driven AY music and level meters.
 ;
 ; The running order:
 ;   BRIEFING      double-height ROM-font mission text, type-on
@@ -20,7 +14,7 @@
 ;   STAR SNAKE    sine-wave text scroller under a drifting starfield
 ;   SINE SCROLL   32x24 pixel letters, one pixel a frame, per-column wave
 ;   SOLID CUBES   Driller-style solids, faces dithered at build time
-;   DOT RUNNER    a runner drawn as 36 joints, off real running gait
+;   DOT RUNNER    three runners derived from CMU motion-capture joints
 ;   DEEP SPACE    48 coloured stars, three parallax layers
 ;   3D GRAPHS     the classic BASIC surface plot, then machine code
 ;   NIGHT TRAIN   two Yie Ar Kung-Fu fighters, on a moving flatbed
@@ -45,7 +39,7 @@
 ; Keys:  Q resets to BASIC.  On the 128K build, M mutes the music.
 ;
 ; Build:  make            (sjasmplus + python3; see README.md)
-; Test:   make test       (needs ZEsarUX for the emulator smoke test)
+; Test:   make test-runtime  (SkoolKit; see README.md)
 ; ----------------------------------------------------------------------------
         IFDEF TARGET128
         DEVICE ZXSPECTRUM128
@@ -61,13 +55,9 @@ SCREEN   EQU $4000
 ATTRS    EQU $5800
 SCROLATT EQU $5AA0              ; attribute rows 21-23: the runner's ground
                                 ;   bands, and the 128K console's meters
-        IFDEF TARGET128
-SNAKATT  EQU $5A40              ; rows 18-20: on the 128K the snake sits three
-SNAKROW  EQU $40                ;   rows higher, clear of the console's meters
-        ELSE
-SNAKATT  EQU $5AA0              ; on the 48K there are no meters to dodge, so
-SNAKROW  EQU $A0                ;   it stays hard against the bottom
-        ENDIF
+SNAKATT  EQU $5960              ; middle band: attribute rows 11-13
+SNAKROW  EQU $60                ; bitmap y=88, within the middle screen third
+SNAKHI   EQU $48
 ROMFONT  EQU $3C00              ; ROM font base (char 32 lives at $3D00)
 
 MAPS     EQU $A000              ; 9 x 1344 byte tunnel maps (3 scenes x 3 bob)
@@ -84,16 +74,17 @@ CBUF     EQU $5B00              ; the cube's 8x64-byte off-screen raster
 DOTS     EQU $A000              ; dot records, in the dead map region:
                                 ;   64 x [angle|fast<<7, depth, prevaddr, mask, pad]
 DOTTAB   EQU $F000              ; baked trajectories: 3 geometries
-RDBOT    EQU $A200              ; roto grid: lattice records, pushed
+RDBOT    EQU $A000              ; roto grid: lattice records, pushed
 RDTOP    EQU $A400              ;   downward from the top by the plotter
 ROTAB    EQU $E000              ; 64 angles x 8 zooms x [A,B,DX,DY]
 BITMSK   EQU $F900              ; one page of $80>>(x&7)
 BSBUF    EQU $AC00              ; sine scroller: 24 rows x 32 bytes
-DBLTAB   EQU $B000              ; x -> x with every bit doubled
 BSGLY    EQU $B200              ; the current letter, 24 rows x 4 bytes
-BSTMP    EQU $B280              ; its half-way 16x8
+        IFDEF TARGET128
+BANDTOP  EQU 120                ; lower screen, above the AY console at y=168
+        ELSE
 BANDTOP  EQU 72                 ; the letter band's top scanline
-RUN_DOTS EQU 38                 ; joints in the dot runner
+        ENDIF
 STACK    EQU $FA00
 IM2TAB   EQU $FB00              ; 257 bytes of $FC
 IM2VEC   EQU $FCFC              ; RETI
@@ -123,14 +114,16 @@ START:
 MAIN:
         ei
         halt                    ; sync to 50Hz frame interrupt
+        IFNDEF TARGET128
         di
+        ENDIF
         call UPDATE
 .rnd:   call DOTT               ; self-modified: per-scene renderer
         call ROWCOLOURS
         call SCROLLER
         call TITLE
         IFDEF TARGET128
-        call AYFRAME            ; music, then the console.  Last in the frame
+        call AYCON              ; console only; music runs at the interrupt
         ELSE                    ;   on purpose: rows 21-23 are the last thing
         ;call MUSIC             ;   the beam reaches, so a full attr repaint
         ENDIF                   ;   down there can never be caught mid-write
@@ -266,6 +259,9 @@ UPDATE:
         ld a,(SCENE)
         cp 9
         call z,BRIEFSET         ;   then the type-on begins
+        ld a,(SCENE)
+        cp 10
+        call z,GRAPHSET
         ld a,(SCENE)
         cp 11
         call z,ROTSET           ; the roto grid: a bare plane
@@ -432,19 +428,7 @@ SCROLLER:                       ; each scroller has its own scene now:
         cp 4
         ret nz
 .surge:
-        ld a,(FRAMES)
-        ld h,HIGH SINTAB
-        ld l,a
-        ld a,(hl)               ; 0..16
-        rrca
-        rrca
-        and 7                   ; 0..4
-        cp 4
-        jr c,.sok
-        ld a,3
-.sok:
-        add a,2                 ; 2..5 px/frame: the 50 fps ceiling
-        ld b,a
+        ld b,2                  ; constant speed; acceleration looked jumpy
 .spx:
         push bc
         call SHIFT1
@@ -477,7 +461,7 @@ SCROLLER:                       ; each scroller has its own scene now:
         ld a,SNAKROW            ; DE = window top of this column
         or b
         ld e,a
-        ld d,$50
+        ld d,SNAKHI
 .call:
         call 0                  ; self-modified: SNK0..SNK16
         ld a,c
@@ -657,7 +641,11 @@ WCELLS:                         ; A = colour, D = row, E = col, step 4
         ld c,a
 .row:
         ld a,d
+        IFDEF TARGET128
+        cp 21
+        ELSE
         cp 24
+        ENDIF
         ret nc
         push de
         ld l,d                  ; HL = ATTRS + row*32 + col
@@ -746,9 +734,11 @@ STARSET:
 ; colour into the attr cell it occupies.  STARSFEW is the night sky over
 ; the snake scene: one bright layer, leaving the budget to the wave.
 STARS:
+        call TITLE.draw         ; draw the header before the beam reaches row 0
         ld a,16
         jr STARGO
 STARSFEW:                       ; the snake's sky: two star layers and
+        call SATERASE
         ld a,$00                ; a companion cube tumbling up there
         ld (STARGRP.dxl+1),a
         ld a,3
@@ -763,47 +753,30 @@ STARSFEW:                       ; the snake's sky: two star layers and
         ld ix,STARDAT+64
         ld b,8
         call STARGRP
-        ld a,(FRAMES)           ; the satellite
-        rrca
-        rrca
-        rrca
-        and 31
-        ld b,24
-        ld c,25
-        call MONE
-        ld hl,ATTRS+3*32+25     ; its colour cells, bright cyan
-        ld a,$45
-        ld (hl),a
-        inc hl
-        ld (hl),a
-        ld hl,ATTRS+4*32+25
-        ld (hl),a
-        inc hl
-        ld (hl),a
-        ret
+        jp SATDRAW
 STARGO:
         ld iyl,a
         ld a,$00                ; near layer: 3.0 px/frame
-        ld (STARGRP.dxl+1),a
+        ld (STREAKGRP.dxl+1),a
         ld a,3
-        ld (STARGRP.dxh+1),a
+        ld (STREAKGRP.dxh+1),a
         ld ix,STARDAT
         ld b,iyl
-        call STARGRP
+        call STREAKGRP
         ld a,$80                ; mid layer: 1.5 px/frame
-        ld (STARGRP.dxl+1),a
+        ld (STREAKGRP.dxl+1),a
         ld a,1
-        ld (STARGRP.dxh+1),a
+        ld (STREAKGRP.dxh+1),a
         ld ix,STARDAT+64
         ld b,iyl
-        call STARGRP
+        call STREAKGRP
         ld a,$A0                ; far layer: 0.625 px/frame
-        ld (STARGRP.dxl+1),a
+        ld (STREAKGRP.dxl+1),a
         xor a
-        ld (STARGRP.dxh+1),a
+        ld (STREAKGRP.dxh+1),a
         ld ix,STARDAT+128
         ld b,iyl
-        ; fall through
+        jp STREAKGRP
 STARGRP:
 .st:
         push bc
@@ -1059,14 +1032,10 @@ PIXADDR:                        ; D = y, E = x -> HL = bitmap byte, A = mask
         or l
         ld l,a
         ld a,e
-        and 7
+        and 7                   ; the top of this page is also the normal stack
         ld c,a
-        ld b,0
-        push hl
-        ld hl,MASKS
-        add hl,bc
-        ld a,(hl)
-        pop hl
+        ld b,HIGH BITMSK
+        ld a,(bc)
         ret
 
 ; --------------------------------------------------------------- INITSCREEN
@@ -1107,9 +1076,10 @@ SCENE:  db 9                    ; boot into the briefing
         dw MAPS+2*MAPSIZE,  MAPS+3*MAPSIZE,  MAPS+2*MAPSIZE,  MAPS+3*MAPSIZE
         dw MAPS+4*MAPSIZE,  MAPS+5*MAPSIZE,  MAPS+4*MAPSIZE,  MAPS+5*MAPSIZE
 
-MASKS:  db $80,$40,$20,$10,$08,$04,$02,$01
-SEQ:    db 9,0,0,11,11,4,5,5,3,3,6,7,10,10,8,8 ; briefing, one tunnel,
-SEQLEN  EQU 16                  ;   then a feature every slot, the
+SEQ:    db 9,0,0,11,11,4,5,5,5,5,5,5 ; ~31 seconds at 50 FPS
+        db 3,3,6,7,10,10,8,8    ; briefing, one tunnel,
+SEQEND:
+SEQLEN  EQU SEQEND-SEQ                  ;   then a feature every slot, the
 SEQPOS: db 0                    ;   snake, type, runner, cube, space...
 XOFF:   db 0                    ; stick man: this frame's x offset
 SROW:   ds 4                    ; stick man: current sprite row scratch
@@ -1119,6 +1089,10 @@ CTAB:                           ; giant-text row colours, (c<<3)|c pairs:
 BITCNT: db 1                    ; solo scroller: glyph bits left to feed
 GBUF:   ds 8                    ; solo scroller: current glyph
 
+        IFDEF TARGET128
+        INCLUDE "src/ay128.asm"
+        ENDIF
+FONT0:  INCBIN "build/font0.bin"
         ASSERT $ <= SHADEP1     ; code must stay below the warm palette
 
 ; -------- big tables and generated code, in the tail after the maps -------
@@ -1126,54 +1100,17 @@ GBUF:   ds 8                    ; solo scroller: current glyph
         INCLUDE "build/snake.asm"
 
 ; ------------------------------------------------------------------ GRAPH
-; The surface-plot double act.  Act one: the classic BASIC listing on
-; screen, plodding out one point every other frame below it, the way we
-; all first met this graph.  Act two: wiped clean, the same baked points
-; swept on at machine-code pace with height-mapped colour.
-GRAPH:
-        ld a,(FRAMES+1)
-        and 1
-        jr z,.fast
-        ld a,(FRAMES)           ; ---- act one: BASIC ----
-        or a
-        jr nz,.slow
-        call STARSET
-        ld hl,LDATA             ; the listing goes up
-.ll:
-        ld a,(hl)
-        cp $FF
-        jr z,.linit
-        call TXTSTR
-        jr .ll
-.linit:
-        inc hl
-        ld hl,G3D0
-        ld (GPTR),hl
+; A timed real ROM BASIC preview with a generated listing, followed by
+; explicitly precalculated colour plots. BASICENTER restores borrowed
+; workspace and sets GREALDONE before returning to this renderer.
+GRAPHSET:
         xor a
-        ld (GCNT),a
-        ld (GFAST),a
-        ld a,3
-        ld (GXS),a
-        ld hl,ATTRS+16*32       ; dim green plot strip under the listing
-        ld de,ATTRS+16*32+1
-        ld (hl),$04
-        ld bc,5*32-1
-        ldir
+        ld (GREALDONE),a
         ret
-.slow:
-        ld a,(FRAMES)
-        and 1
-        ret nz
-        ld b,1                  ; one point, every other frame: 1982 speed
-        jr GSTEP
-.fast:
-        ld a,(FRAMES)           ; ---- act two: machine code ----
+GRAPH:
+        ld a,(GREALDONE)
         or a
-        jr nz,.frun
-        xor a                   ; slot start: first showcase surface
-        ld (GIDX),a
-        ld (GTIME),a
-        jp GNEXT
+        jp z,BASICENTER
 .frun:
         ld a,(GTIME)            ; ~1.7s per surface, then the next
         inc a
@@ -1345,7 +1282,7 @@ GNEXT:                          ; wipe, caption, load surface GIDX
         ld a,$C6                ; flashing bright yellow, double height
         ld (BCOL),a
         ld hl,MCTXT
-        ld b,24
+        ld b,MCTXTEND-MCTXT
 .cap:
         ld a,(hl)
         inc hl
@@ -1382,7 +1319,8 @@ GNEXT:                          ; wipe, caption, load surface GIDX
         ld (GFAST),a
         ret
 
-MCTXT:  db "ASSEMBLER: 3200 A SECOND"
+MCTXT:  db "PRECALCULATED / Z80 PLOT"
+MCTXTEND:
 
 HCOL:   db $47,$46,$44,$45,$43,$41,$41,$41  ; height bands, peak first
 GFAST:  db 0
@@ -1390,34 +1328,9 @@ GIDX:   db 0
 GTIME:  db 0
 GXS:    db 3
 
-LDATA:                          ; the listing, as we all typed it in
-        db  1, 1,$07,13
-        db "10 DIM M(255)"
-        db  1, 2,$07,19
-        db "15 LET A=COS (PI/4)"
-        db  1, 3,$07,24
-        db "20 FOR Y=0 TO 140 STEP 5"
-        db  1, 4,$07,12
-        db "30 LET E=A*Y"
-        db  1, 5,$07,24
-        db "40 FOR X=0 TO 140 STEP 3"
-        db  1, 6,$07,25
-        db "50 LET C=X-70: LET D=Y-70"
-        db  1, 7,$07,26
-        db "60 LET Z=78*EXP (-(C*C+D*D"
-        db  1, 8,$07,10
-        db ")/1400)   "
-        db  1, 9,$07,25
-        db "70 LET X1=X+E: LET Y1=Z+E"
-        db  1,10,$07,31
-        db "80 IF Y1>=M(X1) THEN PLOT X1,Y1"
-        db  1,11,$07,15
-        db "85 LET M(X1)=Y1"
-        db  1,12,$07,17
-        db "90 NEXT X: NEXT Y"
-        db  3,14,$C6,25
-        db "BASIC: 25 POINTS A SECOND"
-        db $FF
+BASICPROGRAM:
+        INCBIN "assets/basic/program.bin"
+BASICPROGRAMEND:
 
 GPTR:   dw 0
 GCNT:   db 0
@@ -1493,15 +1406,115 @@ TBUF:   ds 256                  ; column-major scroller buffer, 32 cols x 8
 CUBEATTR:
         INCBIN "build/cubeattr.bin"
 
+        ASSERT $ <= $DC00
         ORG $5E00               ; cold sprite data in the low free RAM
 STARDAT:
         INCBIN "build/stars.bin"
+STREAKGRP:
+.st:
+        push bc
+        ld d,(ix+2)             ; unplot at the current position
+        ld e,(ix+1)
+        call STARTAILADDR
+        call STARTAIL
+        cpl
+        and (hl)
+        ld (hl),a
+        ld a,c
+        inc l
+        cpl
+        and (hl)
+        ld (hl),a
+        call STAREXERASE
+        ld a,(ix+0)             ; drift left, 8.8 fixed point
+.dxl:   sub 0                   ; self-modified per layer
+        ld (ix+0),a
+        ld a,(ix+1)
+.dxh:   sbc a,0                 ; self-modified per layer
+        ld (ix+1),a
+        ld d,(ix+2)             ; replot
+        ld e,a
+        call STARTAILADDR
+        call STARTAIL
+        or (hl)
+        ld (hl),a
+        ld a,c
+        inc l
+        or (hl)
+        ld (hl),a
+        call STAREXDRAW
+        ld a,(ix+2)             ; and colour the cell it sits in
+        and $F8
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld a,(ix+1)
+        rrca
+        rrca
+        rrca
+        and 31
+        or l
+        ld l,a
+        ld de,ATTRS
+        add hl,de
+        ld a,(ix+3)
+        ld (hl),a
+        ld bc,4
+        add ix,bc
+        pop bc
+        djnz .st
+        ret
+
+STARTAILADDR:                   ; trails need an address, not PIXADDR's bit mask
+        ld l,d
+        ld h,HIGH ROWLO
+        ld a,(hl)
+        inc h
+        ld h,(hl)
+        ld l,a
+        ld a,e
+        rrca
+        rrca
+        rrca
+        and 31
+        or l
+        ld l,a
+        ret
+
+STARTAIL:                       ; two cached masks, never read through the stack
+        ld a,e
+        and 7
+        add a,a
+        add a,8
+        ld e,a
+        ld d,HIGH BITMSK
+        ld a,(de)
+        ld b,a
+        inc de
+        ld a,(de)
+        ld c,a
+        ld a,l
+        and 31
+        cp 31
+        jr nz,.ok
+        ld c,0
+.ok:
+        ld a,b
+        ret
+
 ; ------------------------------------------------------------------ TITLE
 ; Scene title cards: 12 chars top-left, sliding down from the screen edge
 ; (0.64s), holding two seconds, sliding back out.  Drawn after everything
 ; else so it floats over any scene; when it ends, the window is repaired
 ; to whatever bitmap the scene expects (chunky halves or darkness).
 TITLE:
+        ld a,(SCENE)
+        cp 7
+        ret z                   ; starfield publishes its title before its stars
+        cp 10
+        ret z                   ; the graph owns its BASIC/ASSEMBLER headings
+.draw:
         ld a,(TITLEF)
         cp 165
         ret nc                  ; long gone
@@ -1552,8 +1565,9 @@ TITLE:
         add a,$40
         ld d,a
         ld e,0
-        ld bc,12
-        ldir
+        DUP 12
+        ldi
+        EDUP
         inc ixh
         ld a,ixh
         cp 8
@@ -1683,155 +1697,6 @@ ZERO12: ds 12
 ; cost ~90k T-states a frame against the 69,888 there are - so the
 ; shading moved to gen_tables, where it is free, and the Z80 got back a
 ; flat blit that erases itself by storing rather than ORing.
-DOTCUBE:
-        ld a,(FRAMES)           ; the hero, one of 32 poses
-        rrca
-        rrca
-        and 31
-        ld l,a
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl               ; * 128 = 32 rows of 4 bytes
-        ld de,CBDAT
-        add hl,de
-        ex de,hl
-        ld b,80
-        ld c,14
-        call CBBLIT
-        jp MINIS                ; then the companions in the corners
-
-CBBLIT:                         ; DE = 32 rows x 4 bytes, B = top y, C = x
-        ld ixl,32
-.l:
-        ld a,b
-        and 7
-        ld h,a
-        ld a,b
-        rra
-        rra
-        rra
-        and 24
-        or h
-        or 64
-        ld h,a
-        ld a,b
-        rla
-        rla
-        and $E0
-        or c
-        ld l,a
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc l
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc l
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc l
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc b
-        dec ixl
-        jp nz,.l
-        ret
-
-MINIS:                          ; four corner cubes, two blitted per
-        ld a,(FRAMES)           ; frame in alternating pairs
-        and 1
-        jr nz,.pair2
-        ld a,(FRAMES)
-        rrca
-        rrca
-        rrca
-        and 31
-        ld b,28                 ; top-left, forward
-        ld c,3
-        call MONE
-        ld a,(FRAMES)
-        rrca
-        rrca
-        rrca
-        cpl                     ; bottom-right, reverse
-        and 31
-        ld b,140
-        ld c,26
-        jp MONE
-.pair2:
-        ld a,(TITLEF)
-        cp 164
-        ret c                   ; while the title card is up, two is plenty
-        ld a,(FRAMES)
-        rrca
-        rrca
-        rrca
-        cpl
-        add a,11                ; top-right: reverse, phase-shifted
-        and 31
-        ld b,28
-        ld c,26
-        call MONE
-        ld a,(FRAMES)
-        rrca
-        rrca
-        rrca
-        add a,17                ; bottom-left: forward, phase-shifted
-        and 31
-        ld b,140
-        ld c,3
-        ; fall through
-MONE:                           ; A = frame, B = top y, C = x byte
-        ld l,a                  ; DE = MCDAT + frame*32
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld de,MCDAT
-        add hl,de
-        ex de,hl
-MCBLIT:                         ; DE = 32 bytes, B = top y, C = x byte
-        ld ixl,16
-.l:
-        ld a,b
-        and 7
-        ld h,a
-        ld a,b
-        rra
-        rra
-        rra
-        and 24
-        or h
-        or 64
-        ld h,a
-        ld a,b
-        rla
-        rla
-        and $E0
-        or c
-        ld l,a
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc l
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc b
-        dec ixl
-        jp nz,.l
-        ret
-
 ; ------------------------------------------------------------------ BRIEF
 ; The mission briefing: double-height ROM-font text (every glyph scanline
 ; written twice - 8x16 characters) typing on line by line in colour
@@ -1844,6 +1709,7 @@ BRIEF:
         ld a,(BLEFT)
         or a
         jr nz,.draw
+        call BCURSOR.clear
         ld hl,(BPTR)            ; next line header: col,row,attr,len
         ld a,(hl)
         cp $FF
@@ -2030,11 +1896,31 @@ CUBESET:                        ; scene entry: dark stage, rainbow rings,
         ld de,ATTRS
         ld bc,672
         ldir
+        ; Fixed white ink across the hero's full travel region: its face
+        ; shading comes from the bitmap, not stationary rainbow colour cells.
+        ld hl,ATTRS+7*32+12
+        ld b,10
+        ld a,$47
+.heroink:
+        DUP 8
+        ld (hl),a
+        inc hl
+        EDUP
+        ld de,24
+        add hl,de
+        djnz .heroink
         ld hl,CBUF
         ld de,CBUF+1
         ld bc,511
         ld (hl),0
         ldir
+        call CBEXPAND
+        ld hl,CBUF
+        ld (CBFRONT),hl
+        ld hl,DOTS
+        ld (CBBACK),hl
+        xor a
+        ld (CBPART),a
         ret
 
 CEDGES: db 0,2, 4,6, 8,10, 12,14
@@ -2094,6 +1980,12 @@ SKYREV:                         ; the sunset, top row to horizon - FULL
         db $57,$57,$57,$57      ;   ...but not against yellow, so the two
         db $30,$30              ;   yellow bands at the horizon - exactly
         db $70,$70              ;   where his legs are - take BLACK ink
+BASICCONTEXT: INCBIN "assets/basic/context.bin"
+BASICCONTEXTEND:
+BASICSTACK: INCBIN "assets/basic/stack.bin"
+BASICSTACKEND:
+BASICLISTING:
+        INCLUDE "build/basic-listing.asm"
         ASSERT $ <= $8000
 
         ORG SHADEP1             ; the warm shade tables died with the
@@ -2153,16 +2045,16 @@ DOTT:
         ld l,a
         ld h,HIGH SINTAB
         ld a,(hl)
-        srl a
-        sub 4                   ; +/-4 horizontally...
+        add a,a
+        sub 16                  ; a broad bend, sampled differently by depth
         add a,e
         ld e,a
         ld a,l
+        add a,a
         add a,64
         ld l,a
         ld a,(hl)
-        srl a
-        sub 4                   ; ...and a quarter-phase vertical sway
+        sub 8                   ; two vertical turns for each horizontal bend
         add a,d
         ld d,a
         call PIXADDR
@@ -2222,13 +2114,14 @@ BCURSOR:                        ; a double-height block leading the
         jr nz,.draw             ; A = 16 -> blank phase? no: draw solid
         ld a,$FF
         jr .draw2
+.clear:
 .draw:
         xor a
 .draw2:
-        ld c,a
+        ld d,a
         ld a,(BROW)
         call ROWADDR
-        ld a,c
+        ld a,d
         REPT 8
         ld (hl),a
         inc h
@@ -2236,7 +2129,7 @@ BCURSOR:                        ; a double-height block leading the
         ld a,(BROW)
         inc a
         call ROWADDR
-        ld a,c
+        ld a,d
         REPT 8
         ld (hl),a
         inc h
@@ -2303,19 +2196,45 @@ DOTSET:                         ; tunnel stage: dark, ringed, dots spread
         ret
 RZBLUE:                         ; one row of tiles, blue on black
         DUP 32
-        add hl,sp               ; u += A
-        add ix,bc               ; v += -B
-        ld a,h                  ; a tile is lit only where BOTH texels
-        and ixh                 ; sit in the high half of their square
+        IFDEF TARGET128
+        add hl,de               ; u, with v in the alternate register set
+        ld a,h
+        exx
+        add hl,de
+        and h
+        and 8
+        or $47
+        exx
+        ld (bc),a
+        inc c
+        ELSE
+        add hl,sp
+        add ix,bc
+        ld a,h
+        and ixh
         and 8
         or $47
         ld (de),a
         inc e
+        ENDIF
         EDUP
         jp ROTZOOM.back
 
-RZRED:                          ; the same row, one paper bit further up
+RZRED:
         DUP 32
+        IFDEF TARGET128
+        add hl,de
+        ld a,h
+        exx
+        add hl,de
+        and h
+        and 8
+        add a,a
+        or $47
+        exx
+        ld (bc),a
+        inc c
+        ELSE
         add hl,sp
         add ix,bc
         ld a,h
@@ -2325,17 +2244,14 @@ RZRED:                          ; the same row, one paper bit further up
         or $47
         ld (de),a
         inc e
+        ENDIF
         EDUP
         jp ROTZOOM.back
 
 
 ; ---------------------------------------------------------------- RUNNER
-; The runner, hi-res and made of dots.  Twenty-eight joints - an open
-; ring for the head, four down the spine, a handful along each limb -
-; plotted as single pixels and unplotted next frame from cached
-; addresses, so the sunset behind him is painted once at scene entry and
-; never touched again.  A twentieth of the writes the chunky figure
-; needed, at four times the resolution.
+; Three articulated dot figures with independent travel and gait clocks.
+; Erase every old figure before drawing any new one so overlaps stay intact.
 RUNNER:
         ld (.rsp+1),sp
         ld a,(RDCNT)            ; unplot last frame's figures
@@ -2366,29 +2282,52 @@ RUNNER:
         ld a,(FRAMES)           ; the companion, half size and further
         rrca                    ; back.  Four frames a pose against the
         rrca                    ; runner's two, which is exactly the ratio
+        rrca
         and 7                   ; of their ground speeds - so his legs keep
         add a,3                 ; time with his own drift, and the two are
         and 7                   ; never in step.  Mask AFTER the offset too:
-        ld c,8                  ; 7+3 indexes past the end of the table                  ; the half-size half of the table
+        ld c,12                 ; companion descriptors follow the hero
         call RUNPOSE
-        ld a,(FRAMES)           ; he runs the other way down the road,
-        rrca                    ; so the two are never a matched pair
+        ld a,(FRAMES)           ; slower companion advances along the road,
+        rrca                    ; with a different stride clock
         rrca
-        cpl
         and 127
-        add a,40
+        add a,16
         ld (RFX),a
         ld a,100                ; and his feet meet the same ground
         ld (RFY),a
         xor a                   ; dark too: a colour would vanish into
         ld (RFINK),a            ; the yellow bands the way white did
+        ld hl,.third
+        ld (RUNFIG.out+1),hl
+        jp RUNFIG
+.third:
+        ld a,(FRAMES)
+        rrca
+        rrca
+        and 7
+        add a,5
+        and 7
+        ld c,12
+        call RUNPOSE
+        ld a,(FRAMES)
+        rrca
+        and 127
+        add a,76
+        ld (RFX),a
+        ld a,94
+        ld (RFY),a
         ld hl,.two
         ld (RUNFIG.out+1),hl
         jp RUNFIG
 .two:
-        ld a,(FRAMES)           ; and the runner himself, full size:
-        rrca                    ; two frames a pose is about 190 steps
-        and 7                   ; a minute, a real running cadence
+        ld a,(FRAMES)
+        and 31
+        ld l,a
+        ld h,0
+        ld de,RUNPHASE
+        add hl,de
+        ld a,(hl)
         ld c,0
         call RUNPOSE
         ld a,(FRAMES)           ; he crosses the screen once a slot
@@ -2418,32 +2357,29 @@ RUNNER:
 .rsp:   ld sp,0
         jp GROUND               ; then the floor rushes past beneath them
 
-RUNPOSE:                        ; A = pose, C = table half -> IX = its dots
+RUNPOSE:                        ; A = pose, C = descriptor base (0 / 12)
         add a,c
         ld l,a
         ld h,0
-        add hl,hl
-        add hl,hl               ; * 4
-        ld e,l
-        ld d,h
-        add hl,hl               ; * 8
-        push de
         ld e,l
         ld d,h
         add hl,hl
-        add hl,hl
-        add hl,hl               ; * 64
-        add hl,de               ; * 72
-        pop de
-        add hl,de               ; * 76 = RUN_DOTS * 2: keep these two in
-        ld de,RUNDAT            ; step, or poses read a byte out of phase
+        add hl,de               ; 3 bytes per generated descriptor
+        ld de,RUNPOSES
         add hl,de
-        push hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld a,(hl)
+        ld (RUNFIG.count+1),a
+        push de
         pop ix
         ret
+        INCLUDE "build/runner-index.asm"
 
 RUNFIG:                         ; IX = pose, RFX/RFY = where.  Never
-        ld b,RUN_DOTS           ; CALLed: SP is carrying the record stack
+.count: ld b,0           ; CALLed: SP is carrying the record stack
 .dl:
         ld a,(ix+0)
         ld c,a
@@ -2455,27 +2391,17 @@ RUNFIG:                         ; IX = pose, RFX/RFY = where.  Never
         ld a,(RFY)
         add a,c
         ld d,a                  ; D = screen y
-        ld a,d                  ; PIXADDR, inlined
-        and 7
-        ld h,a
-        ld a,d
-        rra
-        rra
-        rra
-        and 24
-        or h
-        or 64
-        ld h,a
+        ld l,d
+        ld h,HIGH ROWLO
+        ld a,(hl)
+        inc h
+        ld h,(hl)
+        ld l,a
         ld a,e
         rrca
         rrca
         rrca
         and 31
-        ld l,a
-        ld a,d
-        rla
-        rla
-        and $E0
         or l
         ld l,a
         ld a,e
@@ -2501,19 +2427,6 @@ RUNFIG:                         ; IX = pose, RFX/RFY = where.  Never
         or (hl)
         ld (hl),a
 .one:
-        ld a,h                  ; this dot's colour cell.  A bitmap address
-        rrca                    ; already carries it: attr = $5800 + the
-        rrca                    ; third * 256 + the same low byte, since L
-        rrca                    ; is exactly (char row << 5) | column.  The
-        and 3                   ; second scanline can only be in the same
-        add a,HIGH ATTRS        ; third, so H may be either and it still
-        ld h,a                  ; lands on the right cell
-        ld a,(hl)
-        and $F8                 ; keep the sky's paper, take our own ink
-        ld c,a
-        ld a,(RFINK)
-        or c
-        ld (hl),a
         inc ix
         inc ix
         djnz .dl
@@ -2692,9 +2605,7 @@ TRROWS:                         ; B rows of colour C from HL
         djnz .r
         ret
 
-        IFDEF TARGET128
-        INCLUDE "src/ay128.asm"
-        ENDIF
+
         ASSERT $ <= MAPS        ; the reclaimed map region starts here
 
         ORG RDTOP               ; the reclaimed map region
@@ -2712,8 +2623,9 @@ TRROWS:                         ; B rows of colour C from HL
 ; first: they are bitmap writes, and the beam reads bitmap and attrs
 ; together.
 ROTO:
+        call ROTDOTS            ; keep the depth layer, using the prepared pose
+        call ROTCOPY            ; publish matching colours ahead of the beam
         call ROTPICK
-        call ROTDOTS
         jp ROTZOOM
 
 ROTPICK:                        ; this frame's angle, zoom and steps
@@ -2825,7 +2737,7 @@ ROTPICK:                        ; this frame's angle, zoom and steps
         ret
 
 ; ---------------------------------------------------------------- ROTDOTS
-; The lattice: 9x9 points stepped in 9.7 fixed point, so the integer part
+; The lattice: 7x7 points stepped in 9.7 fixed point, so the integer part
 ; spans 0..511 and a point that has left the screen falls out on a single
 ; carry.  Records are PUSHed - address then mask - which makes next
 ; frame's erase a pop, a cpl and an and.
@@ -2868,7 +2780,7 @@ ROTDOTS:
         ld de,(RT2)
         add hl,de
         ld (RJX),hl
-        ld hl,12288             ; and 96.0 - 3DY - 3DX
+        ld hl,12288             ; original fixed 96-pixel camera height
         ld de,(RT2)
         or a
         sbc hl,de
@@ -2902,27 +2814,17 @@ ROTDOTS:
         ld d,a
         ld a,(RXT)
         ld e,a
-        ld a,d                  ; PIXADDR, inlined: no CALL while SP
-        and 7                   ; is carrying the record stack
-        ld h,a
-        ld a,d
-        rra
-        rra
-        rra
-        and 24
-        or h
-        or 64
-        ld h,a
+        ld l,d
+        ld h,HIGH ROWLO
+        ld a,(hl)
+        inc h
+        ld h,(hl)
+        ld l,a
         ld a,e
         rrca
         rrca
         rrca
         and 31
-        ld l,a
-        ld a,d
-        rla
-        rla
-        and $E0
         or l
         ld l,a
         ld a,e
@@ -2989,7 +2891,9 @@ ROTDOTS:
 ; the two accumulators, the v step and the attribute pointer at once -
 ; nothing is spilled inside the 32-cell run.
 ROTZOOM:
+        IFNDEF TARGET128
         ld (.rsp+1),sp
+        ENDIF
         ld a,(FRAMES)           ; the wash creeps down a row every four
         and 3                   ; frames, then flips which colour leads,
         jr nz,.nw               ; so the plane goes blue-red-blue for ever
@@ -3008,7 +2912,7 @@ ROTZOOM:
         ld (RU),hl
         ld hl,(RV0)
         ld (RV),hl
-        ld de,ATTRS
+        ld de,BSBUF
         ld a,21
         ld (RROW),a
         xor a
@@ -3016,7 +2920,7 @@ ROTZOOM:
         ld a,(TITLEF)           ; the title card owns row 0 while it shows
         cp 164
         jr nc,.row
-        ld de,ATTRS+32
+        ld de,BSBUF+32
         ld a,20
         ld (RROW),a
 .row:
@@ -3039,9 +2943,23 @@ ROTZOOM:
         ld hl,(RU)
         ld ix,(RV)
         ld bc,(RNB)
+        IFDEF TARGET128
+        ld b,d
+        ld c,e
+        exx
+        ld hl,(RV)
+        ld de,(RNB)
+        exx
+        ld de,(RA)
+        ELSE
         ld sp,(RA)
+        ENDIF
 .disp:  jp 0                    ; RZBLUE / RZRED - never CALLed: SP is
 .back:                          ; carrying the u step
+        IFDEF TARGET128
+        ld d,b
+        ld e,c
+        ENDIF
         ld a,e                  ; rows are 32-aligned: E wraps every 8
         or a
         jr nz,.ne
@@ -3062,7 +2980,9 @@ ROTZOOM:
         dec a
         ld (RROW),a
         jp nz,.row
+        IFNDEF TARGET128
 .rsp:   ld sp,0
+        ENDIF
         ret
 
 ROTSET:                         ; scene entry: an empty plane, no records
@@ -3072,7 +2992,8 @@ ROTSET:                         ; scene entry: an empty plane, no records
         ld hl,0
         ld (RUORG),hl
         ld (RVORG),hl
-        ret
+        call ROTPICK
+        jp ROTZOOM              ; prime both layers before the first displayed frame
 
 RANG:   dw 0
 RASPD:  dw $0060
@@ -3104,94 +3025,28 @@ RROW:   db 0
         ASSERT $ <= BSBUF
 
 ; ---------------------------------------------------------------- BIGSCR
-; The scroller, rebuilt in pixels.  One pixel of scroll a frame through a
-; 32-row buffer, then all 32 screen columns painted, each at its own
-; height off a travelling sine - a per-PIXEL wave rather than a per-row
-; one, so the text ripples where it used to step.  Letters are the ROM
-; font blown up x4 by two passes of a bit-doubling table, built on demand
-; as each character enters the buffer.  Nothing here writes an attribute,
-; so nothing here can be blocky the way the old giant letters were.
+; Native 32x24 glyphs scroll through a 24-row buffer at one pixel per
+; 50Hz frame. The 128K version sits above the console.
+; Each byte column follows the sine wave independently.
 BIGSCR:
         call BSFEED
         call BSCOLS
         jp BSPAINT
 
-DBLA:                           ; A -> HL with every bit doubled
+BSGLYPH:                        ; A = ASCII -> a baked 32x24 glyph
+        sub 32
+        add a,a
         ld l,a
         ld h,0
-        add hl,hl
-        ld bc,DBLTAB
-        add hl,bc
-        ld a,(hl)
+        ld de,BSFONTINDEX
+        add hl,de
+        ld e,(hl)
         inc hl
-        ld h,(hl)
-        ld l,a
-        ret
-
-BSROW2:                         ; HL -> 2 source bytes, DE -> 4 written
-        ld a,(hl)
-        inc hl
-        push hl
-        call DBLA
-        ld a,h
-        ld (de),a
-        inc de
-        ld a,l
-        ld (de),a
-        inc de
-        pop hl
-        ld a,(hl)
-        inc hl
-        push hl
-        call DBLA
-        ld a,h
-        ld (de),a
-        inc de
-        ld a,l
-        ld (de),a
-        inc de
-        pop hl
-        ret
-
-BSGLYPH:                        ; A = character -> BSGLY, 32 rows x 4
-        ld l,a
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld bc,ROMFONT
-        add hl,bc
-        ld de,BSTMP             ; pass one: 8x8 -> 16x16
-        ld b,8
-.p1:
-        ld a,(hl)
-        inc hl
-        push hl
-        push bc
-        call DBLA
-        pop bc
-        ld a,h
-        ld (de),a
-        inc de
-        ld a,l
-        ld (de),a
-        inc de
-        pop hl
-        djnz .p1
-        ld hl,BSTMP             ; pass two: 16x8 -> 32x24, every source
-        ld de,BSGLY             ; row landing three times - doubled ONCE
-        ld b,8                  ; and then repeated by an overlapping
-.p2:                            ; LDIR, rather than doubled three times
-        push bc
-        call BSROW2             ; HL += 2, DE += 4
-        push hl
-        ld hl,-4
-        add hl,de               ; HL = the four bytes just written
-        ld bc,8
-        ldir                    ; source trails destination: the row
-        pop hl                  ; repeats itself twice more
-        pop bc
-        djnz .p2
+        ld d,(hl)
+        ex de,hl
+        ld de,BSGLY
+        ld bc,96
+        ldir
         ret
 
 BSFETCH:                        ; the big scroller keeps its own text:
@@ -3207,18 +3062,19 @@ BSFETCH:                        ; the big scroller keeps its own text:
         ld (.tptr+1),hl
         ret
 
-BSTEXT: db "AURA TUNNEL 48K 50FPS ONE BEAM ", 0
+        INCLUDE "build/font-index.asm"
 
 BSFEED:                         ; one pixel of scroll
         ld a,(BSBIT)
-        dec a
-        ld (BSBIT),a
+        or a
         jr nz,.sh
         call BSFETCH            ; the letter is used up: build the next
         call BSGLYPH
         ld a,32
         ld (BSBIT),a
 .sh:
+        ld hl,BSBIT
+        dec (hl)
         ld ix,BSGLY
         ld c,0                  ; buffer row
 .row:
@@ -3242,7 +3098,9 @@ BSFEED:                         ; one pixel of scroll
         rl (ix+1)
         rl (ix+0)
         DUP 32
-        rl (hl)                 ; ...and rides the chain right to left
+        ld a,(hl)               ; register rotate is cheaper than RL (HL)
+        rla                     ; carry rides the chain right to left
+        ld (hl),a
         dec l
         EDUP
         push bc
@@ -3255,18 +3113,25 @@ BSFEED:                         ; one pixel of scroll
         jp nz,.row
         ret
 
-BSCOLS:                         ; the band's colour: a rolling gradient,
-        ld a,(FRAMES)           ; paper black so the pixels do the work.
-        and 7                   ; It only rolls every eighth frame, so it
-        ret nz                  ; only gets repainted every eighth frame
-        ld hl,ATTRS+8*32
-        ld b,8
-.r:
+BSCOLS:                         ; spread the colour wash over eight frames
+        ld a,(FRAMES)
+        and 7
+        cp 6                    ; six rows cover the letters and their wave
+        ret nc
+        ld b,a
+        add a,BANDTOP/8-1
+        ld l,a
+        ld h,0
+        DUP 5
+        add hl,hl
+        EDUP
+        ld de,ATTRS
+        add hl,de
         ld a,(FRAMES)
         rrca
         rrca
         rrca
-        add a,b
+        sub b
         and 7
         add a,LOW CTAB
         ld e,a
@@ -3279,12 +3144,10 @@ BSCOLS:                         ; the band's colour: a rolling gradient,
         rrca
         rrca
         or $40
-        ld c,a
         DUP 32
-        ld (hl),c
-        inc hl
+        ld (hl),a
+        inc l
         EDUP
-        djnz .r
         ret
 
 BSPAINT:                        ; 32 columns, each at its own height
@@ -3351,6 +3214,8 @@ BSPH:   db 0
 
 BSSET:                          ; scene entry: empty buffer, first letter
         call STARSET
+        ld hl,BSTEXT
+        ld (BSFETCH.tptr+1),hl
         ld hl,BSBUF
         ld de,BSBUF+1
         ld bc,767
@@ -3363,10 +3228,12 @@ BSSET:                          ; scene entry: empty buffer, first letter
         ret
 
 BSBIT:  db 32
+FONT1:  INCBIN "build/font1.bin"
         ASSERT $ <= BSBUF
 
-        ORG DBLTAB
-        INCBIN "build/dbltab.bin"
+        ORG $AF00
+RUNSMALL: INCBIN "build/runner-small.bin"
+        ASSERT $ <= BSGLY
         ORG $B300
         INCLUDE "build/bigscr.asm"
 MCDAT:
@@ -3386,6 +3253,11 @@ MCDAT:
 ; If it needs to be cheaper, the lever is the copy itself: a stack-based
 ; block move (POP/PUSH, ~12T a byte) beats LDIR's 21T by nearly half.
 SLIDER:
+        IFDEF TARGET128
+        ld a,(WIPEF)
+        cp 21
+        ret nc
+        ENDIF
 ; The incoming scene's stage slides DOWN over the outgoing image, which
 ; stays where it is.  That is the cheap direction and it was the one
 ; asked for: you see old and new at once, and the new one is static.
@@ -3492,17 +3364,494 @@ SLSL:   db 0
 SLS:    db 0
         ASSERT $ <= MAPSEND
 
+        ORG $DC00
+ROWLO:  INCBIN "build/rowlo.bin"
+ROWHI:  INCBIN "build/rowhi.bin"
+DBLTAB: INCBIN "build/dbltab.bin"
+        ASSERT $ <= $E000
+
         ORG DOTTAB
         INCBIN "build/dots.bin"
         ORG ROTAB
         INCBIN "build/roto.bin"
+        ORG $F300
+DOTCUBE:
+        ; Corner orbits do not overlap the hero or each other. Erase and
+        ; repaint each companion together, before the beam reaches its rows.
+        ld ix,CBOLD+4
+        ld iy,CBPHASE
+        ld a,4
+        ld (CBLEFT),a
+.mini:
+        ld b,(ix+0)
+        ld c,(ix+1)
+        ld d,(ix+2)
+        ld e,(ix+3)
+        call CBCLEAR
+        ld a,(FRAMES)
+        add a,(iy+0)
+        ld l,a
+        ld h,HIGH SINTAB
+        ld a,(hl)
+        add a,(iy+1)
+        ld b,a
+        ld a,l
+        add a,64
+        ld l,a
+        ld a,(hl)
+        rrca
+        rrca
+        rrca
+        and 3
+        add a,(iy+2)
+        ld c,a
+        ld (ix+0),b
+        ld (ix+1),c
+        ld a,(FRAMES)
+        add a,(iy+0)
+        bit 7,a
+        jr z,.small
+        rrca
+        rrca
+        and 31
+        ld l,a
+        ld h,0
+        DUP 7
+        add hl,hl
+        EDUP
+        ld de,CBDAT
+        add hl,de
+        ex de,hl
+        ld (ix+2),32
+        ld (ix+3),4
+        push ix
+        call CBBLIT
+        pop ix
+        jr .next
+.small:
+        rrca
+        rrca
+        and 31
+        ld (ix+2),16
+        ld (ix+3),2
+        push ix
+        call MONE
+        pop ix
+.next:
+        ld de,4
+        add ix,de
+        ld de,3
+        add iy,de
+        ld hl,CBLEFT
+        dec (hl)
+        jp nz,.mini
+        call CBHERO             ; small cubes must reach the beam first
+        jp CBPREP
+
+CBHERO:
+        push ix
+        ld hl,(FRAMES)
+        srl h
+        rr l                    ; divide the full counter: no odd-frame phase flip
+        ld h,HIGH SINTAB
+        ld a,(hl)
+        add a,56
+        ld (CBY),a
+        ld c,a
+        ld a,(CBOLD)
+        cp c
+        jr z,.draw
+        jr c,.edge              ; moving down exposes only the old top row
+        add a,63                ; moving up exposes only the old bottom row
+.edge:
+        ld b,a
+        ld c,12
+        ld d,1
+        ld e,8
+        call CBCLEAR
+.draw:
+        ld a,(CBY)
+        ld b,a
+        ld c,12
+        ld a,b
+        ld (CBOLD),a
+        ld a,c
+        ld (CBOLD+1),a
+        ld de,(CBFRONT)
+        ld ixl,64
+.hero:
+        call CBROW
+        DUP 8
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc l
+        EDUP
+        inc b
+        dec ixl
+        jr nz,.hero
+        pop ix
+        ret
+
+; B=y, C=byte column; preserve BC/DE and all index registers.
+CBROW:
+        ld l,b
+        ld h,HIGH ROWLO
+        ld a,(hl)
+        or c
+        inc h
+        ld h,(hl)
+        ld l,a
+        ret
+
+CBCLEAR:                        ; B,C top/left, D height, E byte width
+.row:
+        call CBROW
+        ld a,e
+        cp 8
+        jr z,.eight
+        cp 4
+        jr z,.four
+        xor a
+        jr .two
+.eight:
+        xor a
+        DUP 4
+        ld (hl),a
+        inc l
+        EDUP
+.four:
+        xor a
+        DUP 2
+        ld (hl),a
+        inc l
+        EDUP
+.two:
+        ld (hl),a
+        inc l
+        ld (hl),a
+        inc b
+        dec d
+        jr nz,.row
+        ret
+
+CBEXPAND:
+        ld a,(FRAMES)
+        rrca
+        rrca
+        and 31
+        ld l,a
+        ld h,0
+        DUP 7
+        add hl,hl
+        EDUP
+        ld de,CBDAT
+        add hl,de
+        ld de,CBUF
+        ld b,32
+.row:
+        DUP 4
+        ld a,(hl)
+        inc hl
+        exx
+        ld l,a
+        ld h,HIGH DBLTAB
+        ld a,(hl)
+        exx
+        ld (de),a
+        inc de
+        exx
+        inc h
+        ld a,(hl)
+        exx
+        ld (de),a
+        inc de
+        EDUP
+        push hl
+        push bc
+        ld hl,-8
+        add hl,de
+        ld bc,8
+        ldir
+        pop bc
+        pop hl
+        djnz .row
+        ret
+
+CBPREP:
+        ld a,(CBPART)
+        or a
+        jr nz,.resume
+        ld a,(FRAMES)
+        rrca
+        rrca
+        inc a
+        and 31
+        ld l,a
+        ld h,0
+        DUP 7
+        add hl,hl
+        EDUP
+        ld de,CBDAT
+        add hl,de
+        ld de,(CBBACK)
+        jr .paint
+.resume:
+        ld hl,(CBSRC)
+        ld de,(CBDST)
+.paint:
+        ld b,8
+        call CBEXPAND.row
+        ld (CBSRC),hl
+        ld (CBDST),de
+        ld a,(CBPART)
+        inc a
+        and 3
+        ld (CBPART),a
+        ret nz
+        ld hl,(CBFRONT)
+        ld de,(CBBACK)
+        ld (CBFRONT),de
+        ld (CBBACK),hl
+        ret
+CBFRONT: dw CBUF
+CBBACK: dw DOTS
+CBPART: db 0
+CBSRC: dw 0
+CBDST: dw 0
+
+; Old bounds [y, byte-x, height, byte-width]; all are safe to clear on entry.
+CBOLD: db 56,12,64,8, 24,2,32,4, 24,25,32,4, 120,2,32,4, 120,25,32,4
+CBPHASE: db 0,24,2, 64,24,25, 128,120,2, 192,120,25
+CBLEFT: db 0
+CBY: db 0
+
+CBBLIT:                         ; DE = 32 rows x 4 bytes, B = top y, C = x
+        ld ixl,32
+.l:
+        ld a,b
+        and 7
+        ld h,a
+        ld a,b
+        rra
+        rra
+        rra
+        and 24
+        or h
+        or 64
+        ld h,a
+        ld a,b
+        rla
+        rla
+        and $E0
+        or c
+        ld l,a
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc l
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc l
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc l
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc b
+        dec ixl
+        jp nz,.l
+        ret
+
+MONE:                           ; A = frame, B = top y, C = x byte
+        ld l,a                  ; DE = MCDAT + frame*32
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,MCDAT
+        add hl,de
+        ex de,hl
+MCBLIT:                         ; DE = 32 bytes, B = top y, C = x byte
+        ld ixl,16
+.l:
+        ld a,b
+        and 7
+        ld h,a
+        ld a,b
+        rra
+        rra
+        rra
+        and 24
+        or h
+        or 64
+        ld h,a
+        ld a,b
+        rla
+        rla
+        and $E0
+        or c
+        ld l,a
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc l
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc b
+        dec ixl
+        jp nz,.l
+        ret
+
+SATERASE:
+        ld bc,(SATPOS)
+        push bc
+        ld d,32
+        ld e,4
+        call CBCLEAR
+        pop bc
+        xor a
+        jp SATATTR
+SATDRAW:
+        ld a,(FRAMES)
+        ld l,a
+        ld h,HIGH SINTAB
+        ld a,(hl)
+        add a,24
+        ld b,a
+        ld a,l
+        add a,64
+        ld l,a
+        ld a,(hl)
+        srl a
+        add a,8
+        ld c,a
+        ld (SATPOS),bc
+        push bc
+        ld a,(FRAMES)
+        rrca
+        rrca
+        and 31
+        ld l,a
+        ld h,0
+        DUP 7
+        add hl,hl
+        EDUP
+        ld de,CBDAT
+        add hl,de
+        ex de,hl
+        call CBBLIT
+        pop bc
+        ld a,$45
+        jp SATATTR
+SATATTR:
+        push af
+        ld a,b
+        and $F8
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld e,c
+        ld d,0
+        add hl,de
+        ld de,ATTRS
+        add hl,de
+        pop af
+        ld b,5
+.row:
+        DUP 4
+        ld (hl),a
+        inc hl
+        EDUP
+        ld de,28
+        add hl,de
+        djnz .row
+        ret
+SATPOS: db 8,24                  ; byte x, pixel y
+
+STAREXERASE:
+        ld a,ixl
+        sub LOW STARDAT
+        cp 16                   ; four nearest stars have the larger core
+        ret nc
+        call STAREXADDR
+        cpl
+        and (hl)
+        ld (hl),a
+        ret
+STAREXDRAW:
+        ld a,ixl
+        sub LOW STARDAT
+        cp 16
+        ret nc
+        call STAREXADDR
+        or (hl)
+        ld (hl),a
+        ret
+STAREXADDR:
+        ld a,(ix+2)
+        inc a
+        ld l,a
+        ld h,HIGH ROWLO
+        ld a,(hl)
+        inc h
+        ld h,(hl)
+        ld l,a
+        ld a,(ix+1)
+        rrca
+        rrca
+        rrca
+        and 31
+        or l
+        ld l,a
+        ld a,(ix+1)
+        and 7
+        ld e,a
+        ld d,HIGH BITMSK
+        ld a,(de)
+        ld c,a
+        srl a
+        or c                    ; 2-pixel core beneath the 6-pixel trail
+        ret
+
+ROTCOPY:                        ; complete prepared plane, before scanout
+        ld hl,BSBUF
+        ld de,ATTRS
+        ld bc,672
+        ld a,21
+.row:
+        DUP 32
+        ldi
+        EDUP
+        dec a
+        jp nz,.row
+        ret
+
+        INCLUDE "src/basic.asm"
+        ASSERT $ <= BITMSK
+
         ORG BITMSK
         INCBIN "build/bitmask.bin"
 
         ORG IM2TAB
         DS 257, HIGH IM2VEC
         ORG IM2VEC
+        IFDEF TARGET128
+        jp AYIRQ
+        ELSE
         DB $ED,$4D              ; reti
+        ENDIF
+
+        ORG $FD00
+FONT2:  INCBIN "build/font2.bin"
+        ASSERT $ <= $10000
 
         IFDEF TARGET128
         SLOT 3

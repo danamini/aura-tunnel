@@ -22,7 +22,7 @@ precalc; the Z80 only copies, pops and looks up.  Outputs (build/):
   bitmask.bin   one page of $80>>(x&7), for single-pixel plots.
   dbltab.bin    x with every bit doubled: the scroller's font scaler.
   bigscr.asm    the scroller's 8 baked column-descent variants.
-  runner.bin    8 poses x 36 joints of the dot runner, baked full size
+  runner.bin    12 full-cycle poses, 64 points each; companion has 8 x 28
                 and half size, off real running gait kinematics.
 
 The 128K edition's AY score is baked separately by tools/gen_ay128.py.
@@ -286,7 +286,7 @@ def dot_geo(shape):
         sc = shape(a)
         for d in range(32):
             t = d / 31.0
-            r = (5 + 108 * t * t) * sc
+            r = (5 + 104 * t * t) * sc
             x = round(128 + r * math.cos(a))
             y = round(92 + r * 0.72 * math.sin(a))
             assert 4 <= x <= 251 and 4 <= y <= 183, (x, y)
@@ -295,9 +295,7 @@ def dot_geo(shape):
 
 dots = bytearray()
 dots += dot_geo(lambda a: 1.0)                                   # tube
-dots += dot_geo(lambda a: 0.72 / max(abs(math.cos(a)), abs(math.sin(a))))
-dots += dot_geo(lambda a: 0.82 * (1.0 + 0.30 * math.cos(4 * a)))  # star
-assert len(dots) == 2304
+assert len(dots) == 768
 write("dots.bin", dots)
 
 # --------------------------------------------------------- roto grid
@@ -329,7 +327,9 @@ write("roto.bin", roto)
 
 # One page of pixel masks, so a plot can fetch $80>>(x&7) with a single
 # ld a,(de) instead of an indexed add.
-write("bitmask.bin", bytes(0x80 >> (i & 7) for i in range(256)))
+masks = bytes(0x80 >> i for i in range(8))
+trails = bytes(v for i in range(8) for v in ((0xfc00 >> i) >> 8, (0xfc00 >> i) & 255))
+write("bitmask.bin", masks + trails + bytes(232))
 
 # ------------------------------------------------- hi-res sine scroller
 # The big scroller, rebuilt in pixels.  Letters are the ROM font scaled
@@ -347,7 +347,7 @@ for x in range(256):
             v |= 3 << (2 * b)
     dbl += bytes((v & 255, v >> 8))
 assert len(dbl) == 512
-write("dbltab.bin", dbl)
+write("dbltab.bin", dbl[1::2] + dbl[0::2])
 
 # One descent routine per start-scanline phase: 34 writes down a single
 # screen column - a blank guard row, the 32 buffer rows, another guard -
@@ -384,95 +384,26 @@ with open(os.path.join(out, "bigscr.asm"), "w") as f:
 print(f"  bigscr.asm: 8 descent variants")
 
 # ------------------------------------------------------------ dot runner
-# A RUNNING gait, not the old walk.  Eight keyframes of the cycle, one
-# per pose, taken from the standard sagittal-plane figures for distance
-# running (right footstrike at 0%):
-#
-#   %cycle    0    12.5   25    37.5   50    62.5   75    87.5
-#   hip     +30    +18    +2    -12    -5    +18   +38    +40
-#   knee    +15    +40   +30    +25   +75   +105   +80    +35
-#
-# The signature of a run rather than a walk is the knee: it folds to
-# ~105 degrees through mid-swing (heel toward the backside) where a walk
-# barely passes 60, the arms stay locked near 90 at the elbow, and the
-# body leaves the ground twice a cycle - so the whole figure bobs, low at
-# each midstance and high through each flight phase.
-RUN_DOTS = 38
-D = math.radians
+# Captured joint trajectories, converted and projected only at build time.
+from mocap_runner import run_pose
 
-HIP   = [D(x) for x in (30, 18, 2, -12, -5, 18, 38, 40)]
-KNEE  = [D(x) for x in (15, 40, 30, 25, 75, 105, 80, 35)]
-LEAN  = D(8)                        # trunk carried forward, as runners do
-ELBOW_BACK, ELBOW_FWD = D(68), D(118)   # the elbow WORKS: it opens as the
-                                        # arm swings back and closes as it
-                                        # comes forward, which is what makes
-                                        # an arm read as jointed rather than
-                                        # as a rigid L pivoting at the shoulder
-
-THIGH, SHANK, FOOT = 30.0, 30.0, 9.0
-UPPER, FORE = 16.0, 14.0
-HIPY, SHOY = 70.0, 28.0
-
-
-def curve(tab, c):                  # sample a keyframe curve at cycle c
-    f = (c % 1.0) * 8.0
-    i = int(f)
-    return tab[i] + (tab[(i + 1) & 7] - tab[i]) * (f - i)
-
-
-def run_pose(c):
-    pts = []
-    # lowest at each midstance, highest through each flight phase
-    dy = -4.0 * math.cos(4 * math.pi * (c - 0.125))
-    hx, hy = 40.0, HIPY + dy
-    sx, sy = hx + math.sin(LEAN) * (HIPY - SHOY), SHOY + dy
-
-    def chain(x0, y0, segs):
-        x, y = x0, y0
-        for length, ang, n in segs:
-            nx, ny = x + length * math.sin(ang), y + length * math.cos(ang)
-            for i in range(1, n + 1):
-                pts.append((x + (nx - x) * i / n, y + (ny - y) * i / n))
-            x, y = nx, ny
-        return x, y
-
-    hd = 15.0 + dy                  # the head, an open ring
-    for j in range(6):
-        a = 2 * math.pi * j / 6
-        pts.append((sx + math.sin(LEAN) * 13 + 9 * math.sin(a), hd + 9 * math.cos(a)))
-    for i in range(6):              # the spine, shoulder down to hip
-        t = i / 5.0
-        pts.append((sx + (hx - sx) * t, sy + (hy - sy) * t))
-
-    for side in (0.0, 0.5):         # the far limbs are half a cycle behind
-        j = c + side
-        th = curve(HIP, j)                           # thigh, from vertical
-        sh = th - curve(KNEE, j)                     # shank, knee folding back
-        chain(hx, hy, ((THIGH, th, 3), (SHANK, sh, 3)))
-        ax, ay = pts[-1]
-        pts.append((ax + FOOT * math.cos(sh), ay + FOOT * 0.35))   # the foot
-        swing = curve(HIP, j + 0.5)                  # arms counter the legs
-        sa = LEAN - 0.9 * swing
-        t = min(1.0, max(0.0, (sa + 0.50) / 0.85))   # 0 = arm back, 1 = forward
-        elbow = ELBOW_BACK + (ELBOW_FWD - ELBOW_BACK) * t
-        chain(sx, sy, ((UPPER, sa, 3), (FORE, sa + elbow, 3)))
-    return pts
-
-
-run = bytearray()
-for half in (1, 2):                 # full size, then the distant companion
-    for pose in range(8):
-        # the silhouette repeats every step, so eight poses cover half a
-        # cycle: eight DISTINCT frames instead of four shown twice
-        pts = run_pose(pose / 16.0)
-        assert len(pts) == RUN_DOTS, len(pts)
-        xs = [p[0] for p in pts]
+# Emit pose addresses and counts with the data; no hand-written stride maths.
+hero = bytearray()
+small = bytearray()
+index = ["RUNPOSES:"]
+for half, data, label in ((1, hero, "RUNDAT"), (2, small, "RUNSMALL")):
+    for pose in range(12 if half == 1 else 8):
+        pts = run_pose(pose / (12.0 if half == 1 else 8.0), dense=half == 1)
+        index.append(f"        dw {label}+{len(data)}")
+        index.append(f"        db {len(pts)}")
         for x, y in pts:
-            xi, yi = int(round(x / half)), int(round(y / half))
-            assert 0 <= xi <= 79 and 0 <= yi <= 140, (xi, yi, pose)
-            run += bytes((xi, yi))
-assert len(run) == 2 * 8 * RUN_DOTS * 2
-write("runner.bin", run)
+            xi, yi = int(round(x/half)), int(round(y/half))
+            assert 0 <= xi <= 95 and 0 <= yi <= 140, (xi, yi, pose)
+            data += bytes((xi, yi))
+write("runner.bin", hero)
+write("runner-small.bin", small)
+with open(os.path.join(out, "runner-index.asm"), "w") as f:
+    f.write("\n".join(index) + "\nRUNPHASE:\n        db " + ",".join(str(i*12//32) for i in range(32)) + "\n")
 
 # --------------------------------------------------- Driller-style cubes
 # Freescape drew solid faces filled with ordered dither, which is how you
@@ -536,3 +467,6 @@ def bake_cube(size, frames, radius):
 write("cubebig.bin", bake_cube(32, 32, 14.5))
 
 print("tables OK")
+
+write("rowlo.bin", [((y & 0x38) << 2) for y in range(256)])
+write("rowhi.bin", [0x40 | (y & 7) | ((y & 0xc0) >> 3) for y in range(256)])

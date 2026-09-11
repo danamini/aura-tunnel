@@ -6,9 +6,6 @@
 ; 48K memory map.  It must land in the $8000-$BFFF window (page 2, uncontended
 ; on every 128K model) because it runs with page MUSBANK swapped into $C000.
 ;
-; Depends on four symbols from main.asm: SCROLATT, MUSON, and WIPEF/TRMODE
-; (the transition state - see AYCON, which must stand down during a slide).
-;
 ; THE MUSIC.  tools/gen_ay128.py bakes the whole tune down to a per-frame AY
 ; register stream - pitch, harmony and all three volume envelopes are resolved
 ; in Python, so the player is a copy loop with no sequencer and no maths.
@@ -20,23 +17,18 @@
 ; because they change nearly every frame anyway and because the console wants
 ; them - reading them off the stream is cheaper than interrogating the chip.
 ;
-; THE CONSOLE.  Three VU bars in the scroller window, one per channel,
-; spreading from the centre.  It lives in rows 21-23 for a timing reason: the
-; interrupt fires at the top of the frame and the beam does not reach the
-; lower third until roughly 43,500 T-states later, against 14,400 for the top
-; row.  Down here a full attribute repaint cannot be caught mid-write, so the
-; console never tears no matter how late in the frame it runs - which is why
-; MAIN calls it last of all.
+; THE CONSOLE. Three opaque bars spread from the centre in rows 21-23.
+; MAIN draws them after the scene; transitions reserve those rows.
 ; ----------------------------------------------------------------------------
 
 AYSEL    EQU $FF                ; register-select port, high byte ($FFFD)
 AYDAT    EQU $BF                ; register-write port,  high byte ($BFFD)
 
 ; ----------------------------------------------------------------- AYFRAME
-; One frame of music, then the console.  NOTHING in here may touch the stack
+; One frame of music. NOTHING in here may touch the stack
 ; between the two paging OUTs: the demo's stack lives at $FA00, inside the
-; window being swapped out.  Interrupts are already off (MAIN runs di between
-; halts), so the IM2 table going with it is harmless.
+; window being swapped out. The interrupt handler calls this with interrupts
+; disabled, so the IM2 table is restored before another interrupt can run.
 AYFRAME:
         ld a,(MUSON)
         or a
@@ -104,7 +96,7 @@ AYFRAME:
         ld bc,PORT7FFD
         ld a,PAGEBASE
         out (c),a               ; resident page back: stack is live again
-        jr AYCON
+        ret
 
 ; ------------------------------------------------------------------ AYHUSH
 ; M pressed: park the chip and collapse the bars.  The stream pointer is left
@@ -127,7 +119,7 @@ AYHUSH:
         ld a,d
         cp 11
         jr nz,.mute
-        ; fall through to the console, which now paints three empty rows
+        ret                     ; console is updated by the render loop
 
 ; ------------------------------------------------------------------- AYCON
 ; Three 32-cell bars, one attribute row per channel, spreading from the centre.
@@ -164,6 +156,7 @@ AYCON:
 .row:
         ld a,(ix+0)             ; the level the music wants...
         and 15
+        ld (.painted+1),a        ; snapshot: an IRQ can change AYBAR while we draw
         ld c,a
         ld b,(ix+2)             ; ...against the one already on screen
 
@@ -175,7 +168,7 @@ AYCON:
         or a
         ld a,(ix+1)
         jr nz,.canary
-        ld a,$07                ; a silent row should be all backdrop
+        ld a,$00                ; a silent row should be all backdrop
 .canary:
         cp (hl)
         jp nz,.full             ; someone repainted the window: start over
@@ -184,7 +177,7 @@ AYCON:
         cp b
         jp z,.next              ; level unchanged: nothing to draw at all
         jr nc,.grow
-        ld a,$07                ; shrinking: hand the cells back to backdrop
+        ld a,$00                ; shrinking: hand the cells back to backdrop
         jr .edges
 .grow:
         ld a,(ix+1)             ; growing: light them in the bar colour
@@ -232,7 +225,7 @@ AYCON:
 .full:                          ; the slow path: blank the row, redraw the bar
         ld h,d
         ld l,e
-        ld a,$07
+        ld a,$00
         REPT 32                 ; unrolled - a DJNZ here would cost more than
         ld (hl),a               ; the whole bar it is clearing for
         inc l
@@ -255,8 +248,7 @@ AYCON:
         inc l
         djnz .fbar
 .done:
-        ld a,(ix+0)             ; remember what is on screen now.  Re-read it:
-        and 15                  ; the edge path sorts B/C, so C is the higher
+.painted: ld a,0                 ; store the level actually rendered, not a newer IRQ
         ld (ix+2),a             ; of the two levels by now, not the new one
 .next:
         ld a,e
@@ -272,9 +264,9 @@ AYCON:
 ; ink: strong enough to read as a level meter, dark enough to keep the
 ; scroller legible over it.
 AYBAR:
-        db 0,$4F,0              ; A  melody     bright blue
-        db 0,$57,0              ; B  bass       bright red
-        db 0,$5F,0              ; C  percussion bright magenta
+        db 0,$49,0              ; A  melody     bright blue
+        db 0,$52,0              ; B  bass       bright red
+        db 0,$5B,0              ; C  percussion bright magenta
 AYPTR:   dw 0                   ; cursor into the stream, set by AYINIT
 AYPAIRS: db 0
 
@@ -285,3 +277,18 @@ AYINIT:
         ld hl,AYMUS
         ld (AYPTR),hl
         jp AYHUSH
+
+; The raster interrupt owns the score clock. Only the player runs here;
+; rendering and the lower-third meter stay in MAIN.
+AYIRQ:
+        push af
+        push bc
+        push de
+        push hl
+        call AYFRAME
+        pop hl
+        pop de
+        pop bc
+        pop af
+        ei
+        reti

@@ -1,3 +1,5 @@
+PYTHON ?= python3
+
 SJ := bin/sjasmplus
 ZESARUX := /Applications/ZEsarUX.app/Contents/MacOS/zesarux
 
@@ -9,18 +11,22 @@ HAVE128 := $(shell grep -l TARGET128 src/main.asm 2>/dev/null)
 
 all: build/aura-tunnel.sna $(if $(HAVE128),build/aura-tunnel-128.sna)
 
-build/tables.stamp: tools/gen_tables.py
-	python3 tools/gen_tables.py build
+build/tables.stamp: tools/gen_tables.py tools/gen_font.py tools/mocap_runner.py assets/mocap/09_01.bvh assets/oolong-sheet.png
+	$(PYTHON) tools/gen_tables.py build
+	$(PYTHON) tools/gen_font.py build
 	@touch $@
 
-build/aymus.bin: tools/gen_ay128.py
-	python3 tools/gen_ay128.py build
+build/basic-registers.asm build/basic-listing.asm: tools/gen_basic.py tools/basic_graph_program.py assets/basic/registers.json
+	$(PYTHON) tools/gen_basic.py build $(@F)
 
-build/aura-tunnel.sna: src/main.asm build/tables.stamp
+build/aymus.bin: tools/gen_ay128.py
+	$(PYTHON) tools/gen_ay128.py build
+
+build/aura-tunnel.sna: src/main.asm src/basic.asm build/basic-registers.asm build/basic-listing.asm assets/basic/program.bin assets/basic/context.bin assets/basic/stack.bin build/tables.stamp
 	$(SJ) --inc=. --lst=build/aura-tunnel.lst \
 	  --sld=build/aura-tunnel.sld --fullpath src/main.asm
 
-build/aura-tunnel-128.sna: src/main.asm src/ay128.asm build/tables.stamp build/aymus.bin
+build/aura-tunnel-128.sna: src/main.asm src/ay128.asm src/basic.asm build/basic-registers.asm build/basic-listing.asm assets/basic/program.bin assets/basic/context.bin assets/basic/stack.bin build/tables.stamp build/aymus.bin
 	$(SJ) --inc=. -DTARGET128 --lst=build/aura-tunnel-128.lst \
 	  --sld=build/aura-tunnel-128.sld --fullpath src/main.asm
 
@@ -36,11 +42,14 @@ emu128: build/aura-tunnel-128.sna
 
 # Static artifact checks always run; live frame-rate checks need `make emu`.
 test: build/aura-tunnel.sna
-	python3 tools/smoke_test.py
+	$(PYTHON) tools/smoke_test.py
+
+test-runtime: all
+	$(PYTHON) tools/runtime_test.py
 
 # Grab a tear-free PNG of whatever the emulator is showing.
 shot:
-	python3 tools/zrcp_scr.py shot.png
+	$(PYTHON) tools/zrcp_scr.py shot.png
 
 # A clean-room build catches what an incremental one cannot: a generator you
 # deleted while something still depended on its output, or a baked file that
@@ -56,4 +65,10 @@ cleanbuild:
 clean:
 	rm -f build/*
 
-.PHONY: all emu emu128 test shot cleanbuild clean
+.PHONY: all emu emu128 test test-runtime shot cleanbuild clean
+
+# Optional regeneration requires the SkoolKit test environment.
+basic-seed:
+	$(PYTHON) tools/gen_basic_seed.py
+
+.PHONY: basic-seed
